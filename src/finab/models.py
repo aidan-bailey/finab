@@ -1,7 +1,24 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List, Any
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, date
+from dataclasses import dataclass
+
+
+@dataclass
+class NewTransaction:
+    account_id: str
+    date: date
+    amount: int  # amount in milliunits
+    payee_id: Optional[str] = None
+    payee_name: Optional[str] = None
+    category_id: Optional[str] = None
+    memo: Optional[str] = None
+    cleared: Optional[str] = None  # 'cleared', 'uncleared', 'reconciled'
+    approved: Optional[bool] = None
+    flag_color: Optional[str] = None
+    import_id: Optional[str] = None
+    subtransactions: Optional[List[dict]] = None
 
 
 class Amount(BaseModel):

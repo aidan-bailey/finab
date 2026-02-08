@@ -6,7 +6,12 @@ import json
 from types import SimpleNamespace
 import ynab_api
 import ynab_api.apis
+from ynab_api.model.save_transaction import SaveTransaction
+from ynab_api.model.save_transactions_wrapper import SaveTransactionsWrapper
+from ynab_api.model.save_sub_transaction import SaveSubTransaction
 from dotenv import load_dotenv
+import dataclasses
+from finab.models import NewTransaction
 
 
 class YNABClient:
@@ -95,6 +100,48 @@ class YNABClient:
             transactions = [t for t in transactions if t.date <= end_date]
 
         return transactions
+
+    def create_transactions(
+        self,
+        budget_id: str,
+        transactions: list[dict | SaveTransaction | NewTransaction],
+    ) -> Any:
+        """
+        Creates one or more transactions in a specific budget.
+
+        Args:
+            budget_id: The ID of the budget.
+            transactions: A list of dictionaries, NewTransaction objects, or SaveTransaction objects.
+
+        Returns:
+            The response from the API (SaveTransactionsResponse).
+        """
+        transactions_api = ynab_api.apis.TransactionsApi(self.api_client)
+
+        save_transactions = []
+        for txn in transactions:
+            if isinstance(txn, dict):
+                save_transactions.append(SaveTransaction(**txn))
+            elif isinstance(txn, NewTransaction):
+                # Filter out None values to let SaveTransaction handle defaults
+                txn_dict = {
+                    k: v for k, v in dataclasses.asdict(txn).items() if v is not None
+                }
+
+                # Convert subtransactions dictionaries to SaveSubTransaction objects if present
+                if "subtransactions" in txn_dict:
+                    txn_dict["subtransactions"] = [
+                        SaveSubTransaction(**sub) if isinstance(sub, dict) else sub
+                        for sub in txn_dict["subtransactions"]
+                    ]
+
+                save_transactions.append(SaveTransaction(**txn_dict))
+            else:
+                save_transactions.append(txn)
+
+        data = SaveTransactionsWrapper(transactions=save_transactions)
+
+        return transactions_api.create_transaction(budget_id, data)
 
 
 if __name__ == "__main__":
