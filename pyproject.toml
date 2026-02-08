@@ -8,3 +8,9 @@ dependencies = [
     "finwise-python>=1.4.0",
     "ynab-api>=2.0.2",
 ]
+
+[project.scripts]
+finab = "finab.main:main"
+
+[tool.uv]
+package = true
