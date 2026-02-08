@@ -2,7 +2,10 @@ import os
 from datetime import date
 from typing import Any, Optional
 
+import json
+from types import SimpleNamespace
 import ynab_api
+import ynab_api.apis
 from dotenv import load_dotenv
 
 
@@ -26,9 +29,23 @@ class YNABClient:
                 "YNAB_ACCESS_TOKEN environment variable is not set and no api_key provided."
             )
 
+        if self.api_key.lower().startswith("bearer "):
+            self.api_key = self.api_key[7:].strip()
+
         self.configuration = ynab_api.Configuration()
-        self.configuration.api_key["Authorization"] = self.api_key
-        self.configuration.api_key_prefix["Authorization"] = "Bearer"
+        # Disable client-side validation due to schema mismatch with 'default_budget'
+        self.configuration.client_side_validation = False
+
+        # Try to use certifi for SSL certs if available
+        try:
+            import certifi
+
+            self.configuration.ssl_ca_cert = certifi.where()
+        except ImportError:
+            pass
+
+        self.configuration.api_key["bearer"] = self.api_key
+        self.configuration.api_key_prefix["bearer"] = "Bearer"
         # Create an API client with the configuration
         self.api_client = ynab_api.ApiClient(self.configuration)
 
@@ -39,9 +56,11 @@ class YNABClient:
         Returns:
             List of budget summary objects from ynab_api.
         """
-        budgets_api = ynab_api.BudgetsApi(self.api_client)
-        response = budgets_api.get_budgets()
-        return response.data.budgets
+        budgets_api = ynab_api.apis.BudgetsApi(self.api_client)
+        # Use _preload_content=False to bypass broken deserialization of default_budget
+        response = budgets_api.get_budgets(_preload_content=False)
+        data = json.loads(response.data)
+        return [SimpleNamespace(**b) for b in data["data"]["budgets"]]
 
     def get_transactions(
         self,
@@ -60,12 +79,14 @@ class YNABClient:
         Returns:
             List of transaction objects from ynab_api.
         """
-        transactions_api = ynab_api.TransactionsApi(self.api_client)
+        transactions_api = ynab_api.apis.TransactionsApi(self.api_client)
 
         # ynab_api accepts 'since_date' for start_date
-        since_date = start_date if start_date else None
+        kwargs = {}
+        if start_date:
+            kwargs["since_date"] = start_date
 
-        response = transactions_api.get_transactions(budget_id, since_date=since_date)
+        response = transactions_api.get_transactions(budget_id, **kwargs)
 
         transactions = response.data.transactions
 
