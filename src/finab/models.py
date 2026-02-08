@@ -79,6 +79,7 @@ class Account(BaseModel):
     balance: int  # milliunits
     currency_code: str
     finwise_id: Optional[str] = None
+    ynab_id: Optional[str] = None
 
     @classmethod
     def from_finwise(cls, account: FinWiseAccount) -> "Account":

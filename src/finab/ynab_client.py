@@ -129,7 +129,8 @@ class YNABClient:
                 type=acc.type, # Should be compatible with our enum strings
                 balance=acc.balance,
                 currency_code="", # YNAB doesn't return currency per account
-                finwise_id=None
+                finwise_id=None,
+                ynab_id=acc.id
             ))
         return accounts
 
