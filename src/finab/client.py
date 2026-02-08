@@ -1,7 +1,7 @@
 from finwise import FinWise
 from typing import List, Optional
 from datetime import date
-from .models import Transaction
+from .models import Transaction, FinWiseTransaction, Account, FinWiseAccount
 
 
 class FinWiseClient:
@@ -9,6 +9,24 @@ class FinWiseClient:
 
     def __init__(self):
         self._client = FinWise()
+
+    def get_accounts(self) -> List[Account]:
+        """Fetches all accounts from FinWise and converts them to the unified Account model."""
+        # Use the SDK's accounts resource
+        response = self._client.accounts.list()
+        
+        accounts = []
+        for acc in response:
+            # acc is likely a Pydantic model from the SDK
+            # Convert to our internal FinWiseAccount model for validation/mapping
+            # extraction via model_dump() (if pydantic v2) or dict() (v1)
+            # safe approach: getattr or dict access
+            
+            data = acc.model_dump() if hasattr(acc, "model_dump") else acc.dict()
+            fw_acc = FinWiseAccount.model_validate(data)
+            accounts.append(Account.from_finwise(fw_acc))
+            
+        return accounts
 
     def get_transactions(
         self, start_date: Optional[date] = None, end_date: Optional[date] = None
@@ -22,15 +40,18 @@ class FinWiseClient:
         response = self._client._transport.get("/transactions")
 
         if isinstance(response, list):
-            transactions = [Transaction.model_validate(txn) for txn in response]
+            # Parse response into FinWiseTransaction objects
+            finwise_txns = [FinWiseTransaction.model_validate(txn) for txn in response]
 
+            # Filter by date
             if start_date:
-                transactions = [t for t in transactions if t.date.date() >= start_date]
+                finwise_txns = [t for t in finwise_txns if t.date.date() >= start_date]
 
             if end_date:
-                transactions = [t for t in transactions if t.date.date() <= end_date]
+                finwise_txns = [t for t in finwise_txns if t.date.date() <= end_date]
 
-            return transactions
+            # Convert to unified Transaction model
+            return [Transaction.from_finwise(t) for t in finwise_txns]
 
         raise ValueError(
             f"Unexpected response format from FinWise API: {type(response)}"

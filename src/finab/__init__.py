@@ -1,1 +1,1 @@
-from .models import NewTransaction
+from .models import YNABTransaction, Transaction

@@ -4,14 +4,17 @@ from typing import Any, Optional
 
 import json
 from types import SimpleNamespace
+from typing import List
 import ynab_api
 import ynab_api.apis
 from ynab_api.model.save_transaction import SaveTransaction
 from ynab_api.model.save_transactions_wrapper import SaveTransactionsWrapper
 from ynab_api.model.save_sub_transaction import SaveSubTransaction
+from ynab_api.model.save_account import SaveAccount
+from ynab_api.model.save_account_wrapper import SaveAccountWrapper
 from dotenv import load_dotenv
 import dataclasses
-from finab.models import NewTransaction
+from finab.models import YNABTransaction, Transaction, Account
 
 
 class YNABClient:
@@ -101,17 +104,69 @@ class YNABClient:
 
         return transactions
 
+        return transactions
+
+    def get_accounts(self, budget_id: str) -> List[Account]:
+        """
+        Fetches all accounts from a specific budget.
+
+        Args:
+            budget_id: The ID of the budget to fetch accounts from.
+
+        Returns:
+            List of Account objects.
+        """
+        accounts_api = ynab_api.apis.AccountsApi(self.api_client)
+        response = accounts_api.get_accounts(budget_id)
+        
+        accounts = []
+        for acc in response.data.accounts:
+            if acc.closed:
+                continue
+                
+            accounts.append(Account(
+                name=acc.name,
+                type=acc.type, # Should be compatible with our enum strings
+                balance=acc.balance,
+                currency_code="", # YNAB doesn't return currency per account
+                finwise_id=None
+            ))
+        return accounts
+
+    def create_account(self, budget_id: str, account: Account) -> Any:
+        """
+        Creates a new account in a specific budget.
+
+        Args:
+            budget_id: The ID of the budget.
+            account: The Account object to create.
+
+        Returns:
+            The response from the API.
+        """
+        accounts_api = ynab_api.apis.AccountsApi(self.api_client)
+        
+        # SaveAccount needs name, type, balance
+        save_account = SaveAccount(
+            name=account.name,
+            type=account.type,
+            balance=account.balance
+        )
+        
+        data = SaveAccountWrapper(account=save_account)
+        return accounts_api.create_account(budget_id, data)
+
     def create_transactions(
         self,
         budget_id: str,
-        transactions: list[dict | SaveTransaction | NewTransaction],
+        transactions: list[dict | SaveTransaction | YNABTransaction | Transaction],
     ) -> Any:
         """
         Creates one or more transactions in a specific budget.
 
         Args:
             budget_id: The ID of the budget.
-            transactions: A list of dictionaries, NewTransaction objects, or SaveTransaction objects.
+            transactions: A list of dictionaries, YNABTransaction objects, Transaction objects, or SaveTransaction objects.
 
         Returns:
             The response from the API (SaveTransactionsResponse).
@@ -120,9 +175,12 @@ class YNABClient:
 
         save_transactions = []
         for txn in transactions:
+            if isinstance(txn, Transaction):
+                txn = txn.to_ynab()
+
             if isinstance(txn, dict):
                 save_transactions.append(SaveTransaction(**txn))
-            elif isinstance(txn, NewTransaction):
+            elif isinstance(txn, YNABTransaction):
                 # Filter out None values to let SaveTransaction handle defaults
                 txn_dict = {
                     k: v for k, v in dataclasses.asdict(txn).items() if v is not None
