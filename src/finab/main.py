@@ -70,9 +70,10 @@ def sync_transactions(finwise_client: FinWiseClient, ynab_client: YNABClient, bu
     # 2. Fetch Transactions
     print("Fetching transactions...")
     try:
+
         # Fetch last 30 days by default or maybe year to date? User didn't specify, let's do YTD for now based on main() default
-        start_date = date(2026, 1, 1)
-        end_date = date.today()
+        end_date = None #date.today()
+        start_date = date.today().replace(day=1)
         
         fw_transactions = finwise_client.get_transactions(start_date=start_date, end_date=end_date)
         ynab_transactions = ynab_client.get_transactions(budget_id, start_date=start_date) # YNAB API handles start_date
