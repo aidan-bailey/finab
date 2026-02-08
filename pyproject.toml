@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "finwise-python>=1.4.0",
+    "python-dotenv>=1.2.1",
     "ynab-api>=2.0.2",
 ]
 
