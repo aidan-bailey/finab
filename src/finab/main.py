@@ -130,6 +130,12 @@ def sync_transactions(finwise_client: FinWiseClient, ynab_client: YNABClient, bu
             # Update the object with the truncated name for creation
             fw_txn.payee_name = payee_name
             
+            # Force re-import if previously deleted
+            if fw_txn.import_id:
+                # Truncate to 36 chars max (UUID is 36). 
+                # We need 5 chars for _rev1, so take first 31.
+                fw_txn.import_id = f"{fw_txn.import_id[:31]}_rev1"
+            
             transactions_to_create.append(fw_txn)
 
     # 4. Create Transactions
