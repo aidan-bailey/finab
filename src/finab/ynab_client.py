@@ -118,21 +118,37 @@ class YNABClient:
         """
         accounts_api = ynab_api.apis.AccountsApi(self.api_client)
         response = accounts_api.get_accounts(budget_id)
-        
+
         accounts = []
         for acc in response.data.accounts:
             if acc.closed:
                 continue
-                
-            accounts.append(Account(
-                name=acc.name,
-                type=acc.type, # Should be compatible with our enum strings
-                balance=acc.balance,
-                currency_code="", # YNAB doesn't return currency per account
-                finwise_id=None,
-                ynab_id=acc.id
-            ))
+
+            accounts.append(
+                Account(
+                    name=acc.name,
+                    type=acc.type,  # Should be compatible with our enum strings
+                    balance=acc.balance,
+                    currency_code="",  # YNAB doesn't return currency per account
+                    finwise_id=None,
+                    ynab_id=acc.id,
+                )
+            )
         return accounts
+
+    def get_payees(self, budget_id: str) -> List[Any]:
+        """
+        Fetches all payees from a specific budget.
+
+        Args:
+            budget_id: The ID of the budget.
+
+        Returns:
+            List of payee objects.
+        """
+        payees_api = ynab_api.apis.PayeesApi(self.api_client)
+        response = payees_api.get_payees(budget_id)
+        return response.data.payees
 
     def create_account(self, budget_id: str, account: Account) -> Any:
         """
@@ -146,14 +162,12 @@ class YNABClient:
             The response from the API.
         """
         accounts_api = ynab_api.apis.AccountsApi(self.api_client)
-        
+
         # SaveAccount needs name, type, balance
         save_account = SaveAccount(
-            name=account.name,
-            type=account.type,
-            balance=account.balance
+            name=account.name, type=account.type, balance=account.balance
         )
-        
+
         data = SaveAccountWrapper(account=save_account)
         return accounts_api.create_account(budget_id, data)
 
