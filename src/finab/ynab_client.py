@@ -9,6 +9,8 @@ import ynab_api
 import ynab_api.apis
 from ynab_api.model.save_transaction import SaveTransaction
 from ynab_api.model.save_transactions_wrapper import SaveTransactionsWrapper
+from ynab_api.model.update_transaction import UpdateTransaction
+from ynab_api.model.update_transactions_wrapper import UpdateTransactionsWrapper
 from ynab_api.model.save_sub_transaction import SaveSubTransaction
 from ynab_api.model.save_account import SaveAccount
 from ynab_api.model.save_account_wrapper import SaveAccountWrapper
@@ -235,6 +237,70 @@ class YNABClient:
         data = SaveTransactionsWrapper(transactions=save_transactions)
 
         return transactions_api.create_transaction(budget_id, data)
+
+    def update_transactions(
+        self,
+        budget_id: str,
+        transactions: list[dict | YNABTransaction | Transaction],
+    ) -> Any:
+        """
+        Updates one or more transactions in a specific budget.
+
+        Args:
+            budget_id: The ID of the budget.
+            transactions: A list of dictionaries, YNABTransaction objects, or Transaction objects.
+
+        Returns:
+            The response from the API (SaveTransactionsResponse).
+        """
+        transactions_api = ynab_api.apis.TransactionsApi(self.api_client)
+
+        update_transactions_list = []
+        for txn in transactions:
+            txn_dict = {}
+            if isinstance(txn, Transaction):
+                # We need to map Transaction to UpdateTransaction fields manually or via dict
+                # Transaction model has ynab_id which corresponds to 'id' in UpdateTransaction
+                if not txn.ynab_id:
+                    continue
+
+                txn_dict = {
+                    "id": txn.ynab_id,
+                    "account_id": txn.account_id,
+                    "date": txn.date,
+                    "amount": txn.amount,
+                    "payee_id": txn.payee_id,
+                    "payee_name": txn.payee_name,
+                    "category_id": txn.category_id,
+                    "memo": txn.memo,
+                    "cleared": txn.cleared,
+                    "approved": txn.approved,
+                    "flag_color": txn.flag_color,
+                    "import_id": txn.import_id,
+                }
+                if txn.subtransactions:
+                    txn_dict["subtransactions"] = [
+                        SaveSubTransaction(**sub) if isinstance(sub, dict) else sub
+                        for sub in txn.subtransactions
+                    ]
+
+            elif isinstance(txn, dict):
+                txn_dict = txn
+
+            # Filter out None values
+            txn_dict = {k: v for k, v in txn_dict.items() if v is not None}
+
+            if "id" not in txn_dict:
+                continue
+
+            update_transactions_list.append(UpdateTransaction(**txn_dict))
+
+        if not update_transactions_list:
+            return None
+
+        data = UpdateTransactionsWrapper(transactions=update_transactions_list)
+
+        return transactions_api.update_transactions(budget_id, data)
 
     def delete_transaction(self, budget_id: str, transaction_id: str) -> Any:
         """

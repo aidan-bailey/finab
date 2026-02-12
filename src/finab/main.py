@@ -3,7 +3,10 @@ import re
 from dotenv import load_dotenv
 from finab.client import FinWiseClient
 from finab.ynab_client import YNABClient
-from finab.models import YNABTransaction  # Import needed for Starting Balance txn
+from finab.models import (
+    YNABTransaction,
+    Transaction,
+)  # Import needed for Starting Balance txn
 from finab.config import (
     load_aliases,
     save_aliases,
@@ -406,26 +409,112 @@ def process_payee_aliases(fw_transactions, ynab_client, budget_id, fw_id_to_name
         save_merchant_aliases(merchant_aliases)
 
 
+def merge_and_filter_transactions(fw_transactions, ynab_transactions, fw_id_to_ynab_id):
+    """
+    Merges FinWise and YNAB transactions, returning a unified list to process.
+
+    Returns a list of Transaction objects where:
+    - FinWise transactions that match YNAB get their ynab_id set
+    - Uncategorized YNAB transactions (matched or unmatched) are included
+    - New FinWise transactions (no match) are included
+    """
+    print("Merging and filtering transactions...")
+
+    # Build a lookup map for YNAB transactions
+    # Key: (date, amount_milliunits, payee_name_lowercase)
+    ynab_map = {}
+    for txn in ynab_transactions:
+        t_date = txn.date
+        t_amount = txn.amount
+        t_payee = txn.payee_name.lower() if txn.payee_name else ""
+        # Truncate to 50 chars for matching (YNAB limit)
+        if len(t_payee) > 50:
+            t_payee = t_payee[:50]
+
+        key = (t_date, t_amount, t_payee)
+        ynab_map[key] = txn
+
+    transactions_to_process = []
+    matched_ynab_ids = set()
+
+    # Process FinWise transactions
+    for fw_txn in fw_transactions:
+        # Skip if account is not mapped
+        if fw_txn.account_id not in fw_id_to_ynab_id:
+            continue
+
+        # Update to YNAB account ID
+        ynab_account_id = fw_id_to_ynab_id[fw_txn.account_id]
+
+        # Generate match key
+        check_date = fw_txn.date
+        check_amount = fw_txn.amount
+        payee_name = fw_txn.payee_name if fw_txn.payee_name else ""
+        if len(payee_name) > 50:
+            payee_name = payee_name[:50]
+        check_payee = payee_name.lower()
+
+        key = (check_date, check_amount, check_payee)
+
+        # Check for match
+        if key in ynab_map:
+            ynab_txn = ynab_map[key]
+            matched_ynab_ids.add(ynab_txn.id)
+
+            # Link them
+            fw_txn.ynab_id = ynab_txn.id
+
+            # If YNAB transaction is already categorized, skip it
+            if ynab_txn.category_id:
+                print(
+                    f"Skipping already categorized: {ynab_txn.payee_name} ({ynab_txn.amount / 1000:.2f})"
+                )
+                continue
+
+            # Otherwise, add to processing list (uncategorized match)
+            print(
+                f"Found uncategorized match: {fw_txn.payee_name} ({fw_txn.amount / 1000:.2f})"
+            )
+
+        # Update account ID and add to list
+        fw_txn.account_id = ynab_account_id
+        fw_txn.payee_name = payee_name
+        transactions_to_process.append(fw_txn)
+
+    # Process orphan YNAB transactions (uncategorized, not matched to FinWise)
+    for ynab_txn in ynab_transactions:
+        # Skip if already matched
+        if ynab_txn.id in matched_ynab_ids:
+            continue
+
+        # Skip if already categorized
+        if ynab_txn.category_id:
+            continue
+
+        # Skip deleted or transfer transactions
+        if ynab_txn.deleted:
+            continue
+
+        # Convert to Transaction object
+        txn = Transaction.from_ynab(ynab_txn)
+        transactions_to_process.append(txn)
+        print(
+            f"Found uncategorized YNAB transaction: {txn.payee_name} ({txn.amount / 1000:.2f})"
+        )
+
+    print(f"Total transactions to process: {len(transactions_to_process)}")
+    return transactions_to_process
+
+
 def process_categories(
-    fw_transactions,
+    transactions_to_process,
     ynab_client,
     budget_id,
-    ynab_transactions,
     fw_id_to_name,
     ynab_accounts,
 ):
     """Processes category matching and prompts user."""
     print("Processing categories...")
-
-    # Build map of existing YNAB transactions to check for duplicates/existing categorization
-    # Key: (date, amount_milliunits, payee_name_lowercase)
-    # We do this before categorization to skip prompting for transactions that already exist in YNAB
-    existing_ynab_map = {}
-    for txn in ynab_transactions:
-        t_date = txn.date
-        t_amount = txn.amount
-        t_payee = txn.payee_name.lower() if txn.payee_name else ""
-        existing_ynab_map[(t_date, t_amount, t_payee)] = txn
 
     category_rules = load_category_rules()
     category_rules_modified = False
@@ -441,20 +530,14 @@ def process_categories(
         print(f"Failed to fetch categories: {e}")
 
     if ynab_category_map:
-        for fw_txn in fw_transactions:
+        for fw_txn in transactions_to_process:
+            # Skip if already has a category (shouldn't happen, but safety check)
+            if fw_txn.category_id:
+                continue
+
             # Use original description (memo) for matching
             description = fw_txn.memo or ""
             if not description:
-                continue
-
-            # Check if transaction exists in YNAB to skip categorization
-            # Replicate key generation logic from duplicate detection (Step 3)
-            check_payee_raw = fw_txn.payee_name if fw_txn.payee_name else ""
-            if len(check_payee_raw) > 50:
-                check_payee_raw = check_payee_raw[:50]
-            check_key = (fw_txn.date, fw_txn.amount, check_payee_raw.lower())
-
-            if check_key in existing_ynab_map:
                 continue
 
             matched_category_id = None
@@ -500,6 +583,10 @@ def process_categories(
             print(f"Description: {description}")
             print(f"Payee: {fw_txn.payee_name}")  # Show resolved payee
 
+            # Show if this is an existing YNAB transaction
+            if fw_txn.ynab_id:
+                print(f"[Existing YNAB Transaction - ID: {fw_txn.ynab_id}]")
+
             if confirmation_needed and suggested_category_name:
                 print(f"Suggested Category (Confirm?): {suggested_category_name}")
 
@@ -534,12 +621,6 @@ def process_categories(
                     if cat_input.lower() in ynab_category_map:
                         selected_cat_id = ynab_category_map[cat_input.lower()]
 
-                        # Use standard search term logic or default?
-                        # Let's use the standard search term logic below but force the '?' prefix
-                        # We break here to let the regex creation flow handle it,
-                        # but we need to signal that it should be a confirm rule.
-                        # Actually, let's just handle it here to keep it simple.
-
                         search_term = input(
                             f"Enter text to match for '{cat_input}' (default: '{description}'): "
                         ).strip()
@@ -565,7 +646,6 @@ def process_categories(
 
                 if cat_input.lower() == "o" or cat_input.lower().startswith("o "):
                     # One-off category assignment (no rule creation)
-                    # Reverted to original "One-off" behavior (no rule) per user feedback on "Exact Match"
                     if cat_input.lower() == "o":
                         cat_input = input("Enter One-off Category Name: ").strip()
                     else:
@@ -664,7 +744,6 @@ def process_categories(
                     print(
                         f"Category '{cat_input}' not found in YNAB. Please try again."
                     )
-                    # Maybe list suggestions? Too many.
                     continue
 
                 selected_cat_id = ynab_category_map[cat_input.lower()]
@@ -704,56 +783,27 @@ def process_categories(
         save_category_rules(category_rules)
 
 
-def filter_and_create_transactions(
-    fw_transactions, ynab_transactions, fw_id_to_ynab_id, ynab_client, budget_id
-):
-    """Filters duplicates and creates missing transactions in YNAB."""
-    print("Checking for missing transactions...")
-
-    # Build a set of existing YNAB transactions for fast lookup
-    # Key: (date, amount_milliunits, payee_name_lowercase)
-    # Note: Payee name might be None in YNAB or FinWise, handle gracefully
-
-    existing_txns = set()
-    for txn in ynab_transactions:
-        # ynab_api transaction object
-        t_date = txn.date
-        t_amount = txn.amount
-        t_payee = txn.payee_name.lower() if txn.payee_name else ""
-        existing_txns.add((t_date, t_amount, t_payee))
+def sync_changes_to_ynab(transactions_to_sync, ynab_client, budget_id):
+    """Filters duplicates and syncs changes (creates or updates) to YNAB."""
+    print("Syncing changes to YNAB...")
 
     transactions_to_create = []
+    transactions_to_update = []
 
-    for fw_txn in fw_transactions:
-        # fw_txn is Transaction model
+    for txn in transactions_to_sync:
+        # txn is Transaction model
 
-        # Check if account is mapped
-        if fw_txn.account_id not in fw_id_to_ynab_id:
-            continue
-
-        ynab_account_id = fw_id_to_ynab_id[fw_txn.account_id]
-
-        check_date = fw_txn.date
-        check_amount = fw_txn.amount  # already in milliunits in Transaction model
-
-        # Truncate payee_name to 50 chars if necessary (YNAB limit) BEFORE check
-        # because YNAB will have the truncated version
-        payee_name = fw_txn.payee_name if fw_txn.payee_name else ""
-        if len(payee_name) > 50:
-            payee_name = payee_name[:50]
-
-        check_payee = payee_name.lower()
-
-        if (check_date, check_amount, check_payee) not in existing_txns:
-            # Prepare for creation
-            # We need to update the account_id to the YNAB one
-            fw_txn.account_id = ynab_account_id
-
-            # Update the object with the truncated name for creation
-            fw_txn.payee_name = payee_name
-
-            # Force re-import if previously deleted
-            if fw_txn.import_id:
+        # Check if it's an update or create
+        if txn.ynab_id:
+            # It's an update
+            # Only update if category_id is set (since we only care about categorizing)
+            # Or maybe update other fields? For now, just category.
+            if txn.category_id:
+                transactions_to_update.append(txn)
+        else:
+            # It's a create
+            # Force re-import if previously deleted logic moved here
+            if txn.import_id:
                 # Load current salt
                 current_salt = load_salt()
                 # Truncate to 36 chars max (UUID is 36).
@@ -762,21 +812,30 @@ def filter_and_create_transactions(
                 salt_len = len(current_salt)
                 prefix_len = 36 - salt_len
 
-                fw_txn.import_id = f"{fw_txn.import_id[:prefix_len]}{current_salt}"
+                txn.import_id = f"{txn.import_id[:prefix_len]}{current_salt}"
 
-            transactions_to_create.append(fw_txn)
+            transactions_to_create.append(txn)
 
-    # 4. Create Transactions
+    # 1. Create Transactions
     if transactions_to_create:
-        print(f"Found {len(transactions_to_create)} missing transactions.")
-        print("Creating transactions in YNAB...")
+        print(f"Creating {len(transactions_to_create)} new transactions...")
         try:
             ynab_client.create_transactions(budget_id, transactions_to_create)
             print("Successfully created transactions.")
         except Exception as e:
             print(f"Failed to create transactions: {e}")
-    else:
-        print("No missing transactions found. YNAB is up to date.")
+
+    # 2. Update Transactions
+    if transactions_to_update:
+        print(f"Updating {len(transactions_to_update)} existing transactions...")
+        try:
+            ynab_client.update_transactions(budget_id, transactions_to_update)
+            print("Successfully updated transactions.")
+        except Exception as e:
+            print(f"Failed to update transactions: {e}")
+
+    if not transactions_to_create and not transactions_to_update:
+        print("No changes to sync.")
 
 
 def sync_transactions(
@@ -796,20 +855,31 @@ def sync_transactions(
     if fw_transactions is None:
         return
 
-    process_payee_aliases(fw_transactions, ynab_client, budget_id, fw_id_to_name)
+    # Merge and filter transactions to get a unified list to process
+    transactions_to_process = merge_and_filter_transactions(
+        fw_transactions, ynab_transactions, fw_id_to_ynab_id
+    )
 
+    # Process payee aliases (only for FinWise transactions, not YNAB-only ones)
+    finwise_transactions = [
+        t for t in transactions_to_process if not t.ynab_id or t.import_id
+    ]
+    if finwise_transactions:
+        process_payee_aliases(
+            finwise_transactions, ynab_client, budget_id, fw_id_to_name
+        )
+
+    # Process categories for all transactions
     process_categories(
-        fw_transactions,
+        transactions_to_process,
         ynab_client,
         budget_id,
-        ynab_transactions,
         fw_id_to_name,
         ynab_accounts,
     )
 
-    filter_and_create_transactions(
-        fw_transactions, ynab_transactions, fw_id_to_ynab_id, ynab_client, budget_id
-    )
+    # Sync changes to YNAB (create or update)
+    sync_changes_to_ynab(transactions_to_process, ynab_client, budget_id)
 
 
 def main():

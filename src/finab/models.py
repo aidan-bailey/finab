@@ -140,6 +140,7 @@ class Transaction(BaseModel):
     merchant_id: Optional[str] = None
     merchant_name: Optional[str] = None
     import_id: Optional[str] = None
+    ynab_id: Optional[str] = None
     cleared: str = "uncleared"
     approved: bool = False
     flag_color: Optional[str] = None
@@ -174,4 +175,21 @@ class Transaction(BaseModel):
             approved=self.approved,
             flag_color=self.flag_color,
             subtransactions=self.subtransactions,
+        )
+
+    @classmethod
+    def from_ynab(cls, txn: Any) -> "Transaction":
+        return cls(
+            account_id=txn.account_id,
+            date=txn.date,
+            amount=txn.amount,
+            payee_id=txn.payee_id,
+            payee_name=txn.payee_name,
+            category_id=txn.category_id,
+            memo=txn.memo,
+            import_id=txn.import_id,
+            ynab_id=txn.id,
+            cleared=txn.cleared,
+            approved=txn.approved,
+            flag_color=txn.flag_color,
         )
