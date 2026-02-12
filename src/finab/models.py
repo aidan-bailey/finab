@@ -69,7 +69,6 @@ class FinWiseAccount(BaseModel):
     sub_type: Optional[str] = None
     current_balance: Optional[Amount] = None
 
-    
     # We can add more fields if needed, but these are the strict minimum for sync
 
 
@@ -86,9 +85,9 @@ class Account(BaseModel):
         # Map FinWise types to YNAB types
         # FinWise types: https://finwiseapp.io/docs (or inferred from data)
         # YNAB types: checking, savings, creditCard, cash, lineOfCredit, otherAsset, otherLiability
-        
-        ynab_type = "otherAsset" # Default
-        
+
+        ynab_type = "otherAsset"  # Default
+
         fw_type = account.type.lower()
         fw_sub_type = account.sub_type.lower() if account.sub_type else ""
 
@@ -98,31 +97,34 @@ class Account(BaseModel):
             elif "savings" in fw_sub_type:
                 ynab_type = "savings"
             else:
-                ynab_type = "checking" # Default for depository
+                ynab_type = "checking"  # Default for depository
         elif fw_type == "credit" or fw_type == "credit_card":
             ynab_type = "creditCard"
         elif fw_type == "loan":
             ynab_type = "otherLiability"
         elif fw_type == "investment":
             ynab_type = "otherAsset"
-        
+
         # Balance conversion: FinWise is decimal, YNAB is milliunits (int)
-        # However, FinWise balance might be positive for assets and negative for liabilities? 
+        # However, FinWise balance might be positive for assets and negative for liabilities?
         # Usually APIs return absolute values or consistent signed.
         # Let's assume standard behavior: assets +, liabilities - (or + if it's "balance").
         # Detailed verification needed, but for now strict conversion.
-        
-        balance_amount = account.current_balance.amount if account.current_balance else 0
-        currency = account.current_balance.currency_code if account.current_balance else "ZAR"
+
+        balance_amount = (
+            account.current_balance.amount if account.current_balance else 0
+        )
+        currency = (
+            account.current_balance.currency_code if account.current_balance else "ZAR"
+        )
 
         return cls(
             name=account.name,
             type=ynab_type,
             balance=int(balance_amount * 1000),
             currency_code=currency,
-            finwise_id=account.id
+            finwise_id=account.id,
         )
-
 
 
 class Transaction(BaseModel):
@@ -144,9 +146,9 @@ class Transaction(BaseModel):
             date=txn.date.date(),
             amount=int(txn.amount.amount * 1000),
             payee_name=txn.description,
-            memo=txn.notes,
+            memo=txn.description,
             import_id=txn.id,
-            cleared="uncleared",
+            cleared="cleared",
             approved=False,
         )
 

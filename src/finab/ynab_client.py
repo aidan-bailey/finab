@@ -227,10 +227,27 @@ class YNABClient:
         Returns:
             The response from the API.
         """
-        transactions_api = ynab_api.apis.TransactionsApi(self.api_client)
-        # Note: ynab_api documentation suggests delete_transaction just takes budget_id and transaction_id
-        # Assuming standard generated client behavior
-        return transactions_api.delete_transaction(budget_id, transaction_id)
+        # Note: Standard TransactionsApi seems to be missing delete_transaction in this version (2.0.2?)
+        # So we manually invoke it via api_client.call_api
+        resource_path = "/budgets/{budget_id}/transactions/{transaction_id}"
+        path_params = {"budget_id": budget_id, "transaction_id": transaction_id}
+
+        # Determine auth settings - usually 'bearer' for YNAB
+        auth_settings = ["bearer"]
+
+        return self.api_client.call_api(
+            resource_path,
+            "DELETE",
+            path_params,
+            query_params=[],
+            header_params={},
+            body=None,
+            post_params=[],
+            files={},
+            response_type=None,
+            auth_settings=auth_settings,
+            _return_http_data_only=True,
+        )
 
 
 if __name__ == "__main__":

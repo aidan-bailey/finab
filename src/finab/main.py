@@ -3,6 +3,7 @@ import re
 from dotenv import load_dotenv
 from finab.client import FinWiseClient
 from finab.ynab_client import YNABClient
+from finab.models import YNABTransaction  # Import needed for Starting Balance txn
 from finab.config import (
     load_aliases,
     save_aliases,
@@ -15,10 +16,13 @@ from finab.config import (
 )
 import random
 import string
+import hashlib
 
 
 def sync_accounts(
-    finwise_client: FinWiseClient, ynab_client: YNABClient, budget_id: str
+    finwise_client: FinWiseClient,
+    ynab_client: YNABClient,
+    budget_id: str,
 ):
     print("\n--- Account Sync ---")
 
@@ -52,42 +56,54 @@ def sync_accounts(
         return
 
     ynab_account_names = {acc.name for acc in ynab_accounts}
+    # Create a map for ID lookup for starting balance creation
+    ynab_map_name_to_id = {acc.name: acc.ynab_id for acc in ynab_accounts}
+
     account_aliases = load_aliases()
     aliases_modified = False
 
     for fw_acc in fw_accounts:
         # Determine the name to check against YNAB
-        # Use alias if it exists, otherwise check original name
         target_name = account_aliases.get(fw_acc.name, fw_acc.name)
 
         if target_name not in ynab_account_names:
-            # Account not found in YNAB (neither by alias nor by original name)
-            print(f"\nAccount '{fw_acc.name}' not found in YNAB.")
-            user_input = input(
-                f"Enter YNAB account name for '{fw_acc.name}' (default: '{fw_acc.name}'): "
-            ).strip()
+            # Check if this name came from an explicit alias configuration
+            if fw_acc.name in account_aliases:
+                print(
+                    f"\nAccount '{fw_acc.name}' mapped to '{target_name}' in config, but not found in YNAB."
+                )
+                final_name = target_name
+            else:
+                print(f"\nAccount '{fw_acc.name}' not found in YNAB.")
+                user_input = input(
+                    f"Enter YNAB account name for '{fw_acc.name}' (default: '{fw_acc.name}'): "
+                ).strip()
 
-            final_name = user_input if user_input else fw_acc.name
+                final_name = user_input if user_input else fw_acc.name
 
-            # Save alias if user provided a different name
-            if final_name != fw_acc.name:
+                # Ensure we save the alias even if it's the same, so we don't ask again next time if logic changes
+                # But wait, current logic only asks if "target_name not in ynab_account_names".
+                # If target_name IS found, we don't ask.
+                # account_aliases.get(fw_acc.name, fw_acc.name) returns name if not in alias.
+                # So if we want to explicitly store "My Bank" -> "My Bank" in config.json:
+
                 account_aliases[fw_acc.name] = final_name
                 aliases_modified = True
-                print(f"Alias saved: '{fw_acc.name}' -> '{final_name}'")
+                if final_name != fw_acc.name:
+                    print(f"Alias saved: '{fw_acc.name}' -> '{final_name}'")
+                else:
+                    print(
+                        f"Alias saved: '{fw_acc.name}' -> '{final_name}' (Same as original)"
+                    )
 
-            # Now check if this new name exists in YNAB
             if final_name in ynab_account_names:
                 print(
                     f"Mapped '{fw_acc.name}' to existing YNAB account '{final_name}'."
                 )
+                target_name = final_name
             else:
                 print(f"Creating account '{final_name}' in YNAB...")
                 try:
-                    # Calculate Starting Balance
-                    # Starting Balance = Current Balance - (Sum of transactions since start_date)
-                    # Note: We need to match transactions by account ID.
-                    # fw_acc.finwise_id should match fw_txn.account_id
-
                     adjustment = 0
                     account_txns = []
                     if fw_acc.finwise_id:
@@ -108,24 +124,27 @@ def sync_accounts(
                         f"  Calculated Starting Balance: {calculated_starting_balance / 1000:.2f}"
                     )
 
-                    # Temporarily set the balance for creation
                     fw_acc.name = final_name
-                    fw_acc.balance = calculated_starting_balance
-
+                    fw_acc.balance = int(calculated_starting_balance)
                     ynab_client.create_account(budget_id, fw_acc)
-
-                    # Restore original balance (good practice, though probably not used later)
                     fw_acc.balance = original_balance
 
                     print(f"Account '{final_name}' created successfully.")
-                    # Add to local set to avoid duplicates in same run if needed
                     ynab_account_names.add(final_name)
+                    # Refresh our ID map if possible, but YNAB creates SB txn automatically here.
+                    continue  # Skip reset logic for brand new accounts
                 except Exception as e:
                     print(f"Failed to create account '{final_name}': {e}")
+                    continue
         else:
             print(
                 f"Account '{fw_acc.name}' (mapped as '{target_name}') already exists in YNAB."
             )
+            # Ensure mapping is saved even if implicit (same name) or if it exists in YNAB but not in config
+            if fw_acc.name not in account_aliases:
+                account_aliases[fw_acc.name] = target_name
+                aliases_modified = True
+                print(f"Implicit alias saved: '{fw_acc.name}' -> '{target_name}'")
 
     if aliases_modified:
         save_aliases(account_aliases)
@@ -214,7 +233,7 @@ def sync_transactions(
     rules_modified = False
 
     for fw_txn in fw_transactions:
-        # FinWiseTransaction uses 'description' as payee_name in 'from_finwise'
+        # FinWiseTransaction uses 'description' as payee_name and memo in 'from_finwise'
         # Transaction model has 'payee_name'
         original_payee = fw_txn.payee_name if fw_txn.payee_name else ""
         if not original_payee:
@@ -384,65 +403,10 @@ def sync_transactions(
         print("No missing transactions found. YNAB is up to date.")
 
 
-def reset_transactions(ynab_client: YNABClient, budget_id: str):
-    """
-    Deletes all transactions from the specified YNAB budget.
-    This effectively clears the history but preserves accounts and config.
-    """
-    print("\n--- Reset Transactions ---")
-    print("Fetching existing transactions from YNAB...")
-
-    try:
-        # Fetch all transactions
-        ynab_transactions = ynab_client.get_transactions(budget_id)
-
-        if not ynab_transactions:
-            print("No transactions found to delete.")
-            return
-
-        print(f"Found {len(ynab_transactions)} transactions.")
-        confirm = input(
-            "Are you sure you want to delete ALL transactions from YNAB? This cannot be undone. (yes/no): "
-        )
-
-        if confirm.lower() != "yes":
-            print("Reset cancelled.")
-            return
-
-        print("Deleting transactions...")
-        deleted_count = 0
-        for txn in ynab_transactions:
-            try:
-                # We need transaction ID
-                if hasattr(txn, "id") and txn.id:
-                    ynab_client.delete_transaction(budget_id, txn.id)
-                    deleted_count += 1
-                    if deleted_count % 10 == 0:
-                        print(f"Deleted {deleted_count} transactions...", end="\r")
-            except Exception as e:
-                print(f"Failed to delete transaction {txn.id}: {e}")
-
-        print(f"\nSuccessfully deleted {deleted_count} transactions.")
-
-        # Generate new salt
-        # Use a random 4-char suffix to keep it short
-        suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
-        new_salt = f"_r{suffix}"
-        save_salt(new_salt)
-        print(f"Updated import ID salt to: {new_salt}")
-
-    except Exception as e:
-        print(f"Failed to reset transactions: {e}")
-
-
 def main():
     load_dotenv()
 
     import sys
-
-    reset_mode = False
-    if len(sys.argv) > 1 and sys.argv[1] == "--reset-transactions":
-        reset_mode = True
 
     print("Hello from finab!")
 
@@ -502,12 +466,6 @@ def main():
             # Save the new selection
             if budget_id:
                 save_budget_id(budget_id)
-
-        if budget_id and reset_mode:
-            reset_transactions(ynab_client, budget_id)
-            # After reset, we proceed with normal sync to repopulate?
-            # User request said "And then performs the synchronization"
-            # So yes, continue to sync.
 
         if budget_id:
             # Sync Accounts
