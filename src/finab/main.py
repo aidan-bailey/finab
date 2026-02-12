@@ -9,6 +9,8 @@ from finab.config import (
     save_aliases,
     load_payee_rules,
     save_payee_rules,
+    load_merchant_aliases,
+    save_merchant_aliases,
     load_budget_id,
     save_budget_id,
     load_salt,
@@ -220,6 +222,7 @@ def sync_transactions(
     # 2.5 Apply Payee Aliasing
     print("Processing payee aliases...")
     payee_rules = load_payee_rules()
+    merchant_aliases = load_merchant_aliases()
 
     # Fetch existing YNAB payees to avoid prompting for known ones
     try:
@@ -230,7 +233,9 @@ def sync_transactions(
         ynab_payee_names = set()
 
     session_ignored_payees = set()
+    session_ignored_merchants = set()
     rules_modified = False
+    merchant_aliases_modified = False
 
     for fw_txn in fw_transactions:
         # FinWiseTransaction uses 'description' as payee_name and memo in 'from_finwise'
@@ -239,6 +244,58 @@ def sync_transactions(
         if not original_payee:
             continue
 
+        # Priority 1: Merchant ID Aliasing
+        if fw_txn.merchant_id:
+            if fw_txn.merchant_id in merchant_aliases:
+                fw_txn.payee_name = merchant_aliases[fw_txn.merchant_id]
+                continue
+
+            if fw_txn.merchant_id in session_ignored_merchants:
+                continue
+
+            # Check if we should prompt for this merchant ID
+            # If the original payee (description) is already a known YNAB payee,
+            # we might want to skip, BUT since the user wants to map IDs explicitly,
+            # maybe we should check if the ID is unmapped first.
+
+            # Let's check if the description matches a regex rule first as a fallback/helper?
+            # No, requirement says "map merchant_id to a payee alias".
+
+            # However, if the description exactly matches a YNAB payee, maybe we don't need an alias?
+            # But the user said "merchant_id is unreadable", so relying on description
+            # matching YNAB payee might be flaky if the description changes.
+            # Let's prompt if ID is unknown, but maybe offer the description as default.
+
+            # Get account name for display
+            account_name = fw_id_to_name.get(fw_txn.account_id, "Unknown Account")
+            amount_val = fw_txn.amount / 1000.0
+
+            print(f"\nAccount: '{account_name}' | Amount: {amount_val:.2f}")
+            print(f"Merchant ID: {fw_txn.merchant_id}")
+            print(f"Merchant Name: {fw_txn.merchant_name}")
+            print(f"Description: {original_payee}")
+
+            target = input(
+                f"Enter YNAB Payee for this merchant (or Press Enter to skip/ignore): "
+            ).strip()
+
+            if target:
+                merchant_aliases[fw_txn.merchant_id] = target
+                merchant_aliases_modified = True
+                save_merchant_aliases(merchant_aliases)  # Save immediately
+
+                fw_txn.payee_name = target
+                ynab_payee_names.add(target)
+                print(f"Mapping saved: {fw_txn.merchant_id} -> {target}")
+                continue
+            else:
+                session_ignored_merchants.add(fw_txn.merchant_id)
+                # Fall through to regex logic or keep original?
+                # If ignored, we probably just keep original description
+                # or let regex logic try to clean it up.
+                pass
+
+        # Priority 2: Regex / Description Aliasing (Fallback)
         final_payee = original_payee
         matched_rule = False
 
@@ -265,6 +322,10 @@ def sync_transactions(
 
         if original_payee in session_ignored_payees:
             continue
+
+        # Only prompt for regex alias if we haven't already prompted for Merchant ID
+        # (If we prompted for Merchant ID and they skipped, we might still fall here.
+        # That's okay, maybe they want to regex map the description instead.)
 
         # Get account name for display
         account_name = fw_id_to_name.get(fw_txn.account_id, "Unknown Account")
@@ -330,6 +391,9 @@ def sync_transactions(
 
     if rules_modified:
         save_payee_rules(payee_rules)
+
+    if merchant_aliases_modified:
+        save_merchant_aliases(merchant_aliases)
 
     # 3. Duplicate Detection & Filtering
     print("Checking for missing transactions...")

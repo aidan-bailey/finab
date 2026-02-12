@@ -41,6 +41,7 @@ class FinWiseTransaction(BaseModel):
         None, alias="originalTransactionCategoryId"
     )
     merchant_id: Optional[str] = Field(None, alias="merchantId")
+    merchant_name: Optional[str] = Field(None, alias="merchantName")
     original_merchant_id: Optional[str] = Field(None, alias="originalMerchantId")
     user_id: str = Field(alias="userId")
     needs_review: bool = Field(alias="needsReview")
@@ -133,6 +134,8 @@ class Transaction(BaseModel):
     amount: int  # milliunits
     payee_name: Optional[str] = None
     memo: Optional[str] = None
+    merchant_id: Optional[str] = None
+    merchant_name: Optional[str] = None
     import_id: Optional[str] = None
     cleared: str = "uncleared"
     approved: bool = False
@@ -147,6 +150,8 @@ class Transaction(BaseModel):
             amount=int(txn.amount.amount * 1000),
             payee_name=txn.description,
             memo=txn.description,
+            merchant_id=txn.merchant_id,
+            merchant_name=txn.merchant_name,
             import_id=txn.id,
             cleared="cleared",
             approved=False,

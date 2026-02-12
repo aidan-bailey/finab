@@ -48,6 +48,19 @@ def save_payee_rules(rules: List[Dict[str, str]]) -> None:
     _save_data(data)
 
 
+def load_merchant_aliases() -> Dict[str, str]:
+    """Loads the merchant aliases from config.json."""
+    data = _load_data()
+    return data.get("merchant_aliases", {})
+
+
+def save_merchant_aliases(aliases: Dict[str, str]) -> None:
+    """Saves the merchant aliases to config.json."""
+    data = _load_data()
+    data["merchant_aliases"] = aliases
+    _save_data(data)
+
+
 def load_budget_id() -> Optional[str]:
     """Loads the stored budget ID from config.json."""
     data = _load_data()
