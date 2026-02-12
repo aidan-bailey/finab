@@ -48,6 +48,19 @@ def save_payee_rules(rules: List[Dict[str, str]]) -> None:
     _save_data(data)
 
 
+def load_category_rules() -> Dict[str, str]:
+    """Loads the category regex rules from config.json."""
+    data = _load_data()
+    return data.get("categories", {})
+
+
+def save_category_rules(rules: Dict[str, str]) -> None:
+    """Saves the category regex rules to config.json."""
+    data = _load_data()
+    data["categories"] = rules
+    _save_data(data)
+
+
 def load_merchant_aliases() -> Dict[str, str]:
     """Loads the merchant aliases from config.json."""
     data = _load_data()

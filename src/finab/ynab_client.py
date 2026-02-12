@@ -150,6 +150,25 @@ class YNABClient:
         response = payees_api.get_payees(budget_id)
         return response.data.payees
 
+    def get_categories(self, budget_id: str) -> List[Any]:
+        """
+        Fetches all categories from a specific budget.
+
+        Args:
+            budget_id: The ID of the budget.
+
+        Returns:
+            List of category objects.
+        """
+        categories_api = ynab_api.apis.CategoriesApi(self.api_client)
+        response = categories_api.get_categories(budget_id)
+        # Categories are nested in groups in the response
+        # response.data.category_groups -> list of groups -> each has 'categories'
+        all_categories = []
+        for group in response.data.category_groups:
+            all_categories.extend(group.categories)
+        return all_categories
+
     def create_account(self, budget_id: str, account: Account) -> Any:
         """
         Creates a new account in a specific budget.

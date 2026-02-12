@@ -133,6 +133,7 @@ class Transaction(BaseModel):
     date: date
     amount: int  # milliunits
     payee_name: Optional[str] = None
+    category_id: Optional[str] = None
     memo: Optional[str] = None
     merchant_id: Optional[str] = None
     merchant_name: Optional[str] = None
@@ -163,6 +164,7 @@ class Transaction(BaseModel):
             date=self.date,
             amount=self.amount,
             payee_name=self.payee_name,
+            category_id=self.category_id,
             memo=self.memo,
             import_id=self.import_id,
             cleared=self.cleared,

@@ -11,6 +11,8 @@ from finab.config import (
     save_payee_rules,
     load_merchant_aliases,
     save_merchant_aliases,
+    load_category_rules,
+    save_category_rules,
     load_budget_id,
     save_budget_id,
     load_salt,
@@ -394,6 +396,125 @@ def sync_transactions(
 
     if merchant_aliases_modified:
         save_merchant_aliases(merchant_aliases)
+
+    # 2.6 Automatic Categorization
+    print("Processing categories...")
+    category_rules = load_category_rules()
+    category_rules_modified = False
+    session_ignored_categories = set()
+
+    ynab_category_map = {}
+    try:
+        ynab_cats = ynab_client.get_categories(budget_id)
+        for c in ynab_cats:
+            if not c.hidden and not c.deleted:
+                ynab_category_map[c.name.lower()] = c.id
+    except Exception as e:
+        print(f"Failed to fetch categories: {e}")
+
+    if ynab_category_map:
+        for fw_txn in fw_transactions:
+            # Use original description (memo) for matching
+            description = fw_txn.memo or ""
+            if not description:
+                continue
+
+            matched_category_id = None
+
+            # Check existing rules
+            for pattern, cat_name in category_rules.items():
+                try:
+                    if re.search(pattern, description, re.IGNORECASE):
+                        if cat_name.lower() in ynab_category_map:
+                            matched_category_id = ynab_category_map[cat_name.lower()]
+                            break
+                        else:
+                            print(
+                                f"Warning: Rule matches '{cat_name}', but category not found in YNAB."
+                            )
+                except re.error:
+                    continue
+
+            if matched_category_id:
+                fw_txn.category_id = matched_category_id
+                continue
+
+            if description in session_ignored_categories:
+                continue
+
+            # Prompt user
+            account_name = fw_id_to_name.get(fw_txn.account_id, "Unknown Account")
+            amount_val = fw_txn.amount / 1000.0
+
+            print(f"\nAccount: '{account_name}' | Amount: {amount_val:.2f}")
+            print(f"Description: {description}")
+            print(f"Payee: {fw_txn.payee_name}")  # Show resolved payee
+
+            while True:
+                cat_input = input(
+                    "Enter Category Name (or Press Enter to skip, 'r' to reload categories): "
+                ).strip()
+
+                if cat_input.lower() == "r":
+                    print("Reloading YNAB categories...")
+                    try:
+                        ynab_cats = ynab_client.get_categories(budget_id)
+                        ynab_category_map = {}
+                        for c in ynab_cats:
+                            if not c.hidden and not c.deleted:
+                                ynab_category_map[c.name.lower()] = c.id
+                        print(f"Categories reloaded. Total: {len(ynab_category_map)}")
+                    except Exception as e:
+                        print(f"Failed to reload categories: {e}")
+                    continue
+
+                if not cat_input:
+                    session_ignored_categories.add(description)
+                    break
+
+                # Check if valid category
+                if cat_input.lower() not in ynab_category_map:
+                    print(
+                        f"Category '{cat_input}' not found in YNAB. Please try again."
+                    )
+                    # Maybe list suggestions? Too many.
+                    continue
+
+                selected_cat_id = ynab_category_map[cat_input.lower()]
+
+                # Ask for search term to automate regex creation
+                search_term = input(
+                    f"Enter text to match for '{cat_input}' (default: '{description}'): "
+                ).strip()
+
+                if not search_term:
+                    search_term = description
+
+                # Automate regex: Case insensitive, match anywhere, escape user input
+                escaped_term = re.escape(search_term)
+                final_regex = f"(?i).*{escaped_term}.*"
+
+                try:
+                    re.compile(final_regex)
+                    if not re.search(final_regex, description, re.IGNORECASE):
+                        print(
+                            f"Error: Generated rule matches '{search_term}' but that text was not found in description '{description}'."
+                        )
+                        continue
+
+                    category_rules[final_regex] = cat_input
+                    category_rules_modified = True
+                    save_category_rules(category_rules)
+
+                    fw_txn.category_id = selected_cat_id
+                    print(f"Category set to '{cat_input}'")
+                    break
+                except re.error:
+                    print("Invalid regex. Try again.")
+                    continue
+
+    if category_rules_modified:
+        save_category_rules(category_rules)
 
     # 3. Duplicate Detection & Filtering
     print("Checking for missing transactions...")
