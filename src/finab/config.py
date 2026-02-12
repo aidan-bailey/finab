@@ -59,3 +59,16 @@ def save_budget_id(budget_id: str) -> None:
     data = _load_data()
     data["budget_id"] = budget_id
     _save_data(data)
+
+
+def load_salt() -> str:
+    """Loads the transaction import ID salt from config.json."""
+    data = _load_data()
+    return data.get("salt", "_rev7")  # Default to existing if not found
+
+
+def save_salt(salt: str) -> None:
+    """Saves the transaction import ID salt to config.json."""
+    data = _load_data()
+    data["salt"] = salt
+    _save_data(data)

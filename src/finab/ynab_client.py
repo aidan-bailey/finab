@@ -216,6 +216,22 @@ class YNABClient:
 
         return transactions_api.create_transaction(budget_id, data)
 
+    def delete_transaction(self, budget_id: str, transaction_id: str) -> Any:
+        """
+        Deletes a transaction.
+
+        Args:
+            budget_id: The ID of the budget.
+            transaction_id: The ID of the transaction to delete.
+
+        Returns:
+            The response from the API.
+        """
+        transactions_api = ynab_api.apis.TransactionsApi(self.api_client)
+        # Note: ynab_api documentation suggests delete_transaction just takes budget_id and transaction_id
+        # Assuming standard generated client behavior
+        return transactions_api.delete_transaction(budget_id, transaction_id)
+
 
 if __name__ == "__main__":
     try:

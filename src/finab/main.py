@@ -10,7 +10,11 @@ from finab.config import (
     save_payee_rules,
     load_budget_id,
     save_budget_id,
+    load_salt,
+    save_salt,
 )
+import random
+import string
 
 
 def sync_accounts(
@@ -355,9 +359,15 @@ def sync_transactions(
 
             # Force re-import if previously deleted
             if fw_txn.import_id:
+                # Load current salt
+                current_salt = load_salt()
                 # Truncate to 36 chars max (UUID is 36).
-                # We need 5 chars for _rev1, so take first 31.
-                fw_txn.import_id = f"{fw_txn.import_id[:31]}_rev7"
+                # We need length of salt.
+                # Assuming salt is short, e.g. "_rev8" (5 chars)
+                salt_len = len(current_salt)
+                prefix_len = 36 - salt_len
+
+                fw_txn.import_id = f"{fw_txn.import_id[:prefix_len]}{current_salt}"
 
             transactions_to_create.append(fw_txn)
 
@@ -374,8 +384,65 @@ def sync_transactions(
         print("No missing transactions found. YNAB is up to date.")
 
 
+def reset_transactions(ynab_client: YNABClient, budget_id: str):
+    """
+    Deletes all transactions from the specified YNAB budget.
+    This effectively clears the history but preserves accounts and config.
+    """
+    print("\n--- Reset Transactions ---")
+    print("Fetching existing transactions from YNAB...")
+
+    try:
+        # Fetch all transactions
+        ynab_transactions = ynab_client.get_transactions(budget_id)
+
+        if not ynab_transactions:
+            print("No transactions found to delete.")
+            return
+
+        print(f"Found {len(ynab_transactions)} transactions.")
+        confirm = input(
+            "Are you sure you want to delete ALL transactions from YNAB? This cannot be undone. (yes/no): "
+        )
+
+        if confirm.lower() != "yes":
+            print("Reset cancelled.")
+            return
+
+        print("Deleting transactions...")
+        deleted_count = 0
+        for txn in ynab_transactions:
+            try:
+                # We need transaction ID
+                if hasattr(txn, "id") and txn.id:
+                    ynab_client.delete_transaction(budget_id, txn.id)
+                    deleted_count += 1
+                    if deleted_count % 10 == 0:
+                        print(f"Deleted {deleted_count} transactions...", end="\r")
+            except Exception as e:
+                print(f"Failed to delete transaction {txn.id}: {e}")
+
+        print(f"\nSuccessfully deleted {deleted_count} transactions.")
+
+        # Generate new salt
+        # Use a random 4-char suffix to keep it short
+        suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=4))
+        new_salt = f"_r{suffix}"
+        save_salt(new_salt)
+        print(f"Updated import ID salt to: {new_salt}")
+
+    except Exception as e:
+        print(f"Failed to reset transactions: {e}")
+
+
 def main():
     load_dotenv()
+
+    import sys
+
+    reset_mode = False
+    if len(sys.argv) > 1 and sys.argv[1] == "--reset-transactions":
+        reset_mode = True
 
     print("Hello from finab!")
 
@@ -435,6 +502,12 @@ def main():
             # Save the new selection
             if budget_id:
                 save_budget_id(budget_id)
+
+        if budget_id and reset_mode:
+            reset_transactions(ynab_client, budget_id)
+            # After reset, we proceed with normal sync to repopulate?
+            # User request said "And then performs the synchronization"
+            # So yes, continue to sync.
 
         if budget_id:
             # Sync Accounts
