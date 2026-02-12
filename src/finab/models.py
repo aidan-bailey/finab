@@ -80,6 +80,7 @@ class Account(BaseModel):
     currency_code: str
     finwise_id: Optional[str] = None
     ynab_id: Optional[str] = None
+    transfer_payee_id: Optional[str] = None
 
     @classmethod
     def from_finwise(cls, account: FinWiseAccount) -> "Account":
@@ -132,6 +133,7 @@ class Transaction(BaseModel):
     account_id: str
     date: date
     amount: int  # milliunits
+    payee_id: Optional[str] = None
     payee_name: Optional[str] = None
     category_id: Optional[str] = None
     memo: Optional[str] = None
@@ -163,6 +165,7 @@ class Transaction(BaseModel):
             account_id=self.account_id,
             date=self.date,
             amount=self.amount,
+            payee_id=self.payee_id,
             payee_name=self.payee_name,
             category_id=self.category_id,
             memo=self.memo,

@@ -154,12 +154,10 @@ def sync_accounts(
         save_aliases(account_aliases)
 
 
-def sync_transactions(
+def map_accounts(
     finwise_client: FinWiseClient, ynab_client: YNABClient, budget_id: str
 ):
-    print("\n--- Transaction Sync ---")
-
-    # 1. Fetch Accounts to map IDs
+    """Maps FinWise accounts to YNAB accounts."""
     print("Mapping accounts...")
     try:
         fw_accounts = finwise_client.get_accounts()
@@ -194,13 +192,19 @@ def sync_transactions(
 
         if not fw_id_to_ynab_id:
             print("No accounts mapped. Aborting transaction sync.")
-            return
+            return None, None, None
+
+        return fw_id_to_ynab_id, fw_id_to_name, ynab_accounts
 
     except Exception as e:
         print(f"Failed to map accounts: {e}")
-        return
+        return None, None, None
 
-    # 2. Fetch Transactions
+
+def fetch_transactions(
+    finwise_client: FinWiseClient, ynab_client: YNABClient, budget_id: str
+):
+    """Fetches transactions from both services."""
     print("Fetching transactions...")
     try:
         # Fetch last 30 days by default or maybe year to date? User didn't specify, let's do YTD for now based on main() default
@@ -217,11 +221,15 @@ def sync_transactions(
         print(f"FinWise Transactions: {len(fw_transactions)}")
         print(f"YNAB Transactions: {len(ynab_transactions)}")
 
+        return fw_transactions, ynab_transactions
+
     except Exception as e:
         print(f"Failed to fetch transactions: {e}")
-        return
+        return None, None
 
-    # 2.5 Apply Payee Aliasing
+
+def process_payee_aliases(fw_transactions, ynab_client, budget_id, fw_id_to_name):
+    """Applies payee aliasing rules and prompts user for unknowns."""
     print("Processing payee aliases...")
     payee_rules = load_payee_rules()
     merchant_aliases = load_merchant_aliases()
@@ -397,8 +405,28 @@ def sync_transactions(
     if merchant_aliases_modified:
         save_merchant_aliases(merchant_aliases)
 
-    # 2.6 Automatic Categorization
+
+def process_categories(
+    fw_transactions,
+    ynab_client,
+    budget_id,
+    ynab_transactions,
+    fw_id_to_name,
+    ynab_accounts,
+):
+    """Processes category matching and prompts user."""
     print("Processing categories...")
+
+    # Build map of existing YNAB transactions to check for duplicates/existing categorization
+    # Key: (date, amount_milliunits, payee_name_lowercase)
+    # We do this before categorization to skip prompting for transactions that already exist in YNAB
+    existing_ynab_map = {}
+    for txn in ynab_transactions:
+        t_date = txn.date
+        t_amount = txn.amount
+        t_payee = txn.payee_name.lower() if txn.payee_name else ""
+        existing_ynab_map[(t_date, t_amount, t_payee)] = txn
+
     category_rules = load_category_rules()
     category_rules_modified = False
     session_ignored_categories = set()
@@ -419,14 +447,36 @@ def sync_transactions(
             if not description:
                 continue
 
+            # Check if transaction exists in YNAB to skip categorization
+            # Replicate key generation logic from duplicate detection (Step 3)
+            check_payee_raw = fw_txn.payee_name if fw_txn.payee_name else ""
+            if len(check_payee_raw) > 50:
+                check_payee_raw = check_payee_raw[:50]
+            check_key = (fw_txn.date, fw_txn.amount, check_payee_raw.lower())
+
+            if check_key in existing_ynab_map:
+                continue
+
             matched_category_id = None
+            confirmation_needed = False
+            suggested_category_name = None
 
             # Check existing rules
             for pattern, cat_name in category_rules.items():
                 try:
                     if re.search(pattern, description, re.IGNORECASE):
-                        if cat_name.lower() in ynab_category_map:
-                            matched_category_id = ynab_category_map[cat_name.lower()]
+                        check_name = cat_name
+                        is_confirm = False
+
+                        if check_name.startswith("?"):
+                            check_name = check_name[1:]
+                            is_confirm = True
+
+                        if check_name.lower() in ynab_category_map:
+                            matched_category_id = ynab_category_map[check_name.lower()]
+                            if is_confirm:
+                                confirmation_needed = True
+                                suggested_category_name = check_name
                             break
                         else:
                             print(
@@ -435,7 +485,7 @@ def sync_transactions(
                 except re.error:
                     continue
 
-            if matched_category_id:
+            if matched_category_id and not confirmation_needed:
                 fw_txn.category_id = matched_category_id
                 continue
 
@@ -450,10 +500,147 @@ def sync_transactions(
             print(f"Description: {description}")
             print(f"Payee: {fw_txn.payee_name}")  # Show resolved payee
 
+            if confirmation_needed and suggested_category_name:
+                print(f"Suggested Category (Confirm?): {suggested_category_name}")
+
             while True:
-                cat_input = input(
-                    "Enter Category Name (or Press Enter to skip, 'r' to reload categories): "
-                ).strip()
+                prompt_text = "Enter Category Name (or Press Enter to skip, "
+                if confirmation_needed and suggested_category_name:
+                    prompt_text = f"Enter Category Name (Press Enter to confirm '{suggested_category_name}', "
+
+                prompt_text += "'r' to reload, 'i' Inflow, 't' Transfer, 'o' One-off, 'c' Confirm-Rule): "
+
+                cat_input = input(prompt_text).strip()
+
+                if confirmation_needed and suggested_category_name and not cat_input:
+                    # User confirmed suggestion
+                    print(f"Category confirmed: '{suggested_category_name}'")
+                    fw_txn.category_id = ynab_category_map[
+                        suggested_category_name.lower()
+                    ]
+                    break
+
+                if cat_input.lower() == "c" or cat_input.lower().startswith("c "):
+                    # Confirm-Rule: Create a rule that requires confirmation
+                    if cat_input.lower() == "c":
+                        cat_input = input("Enter Category for Confirm-Rule: ").strip()
+                    else:
+                        cat_input = cat_input[2:].strip()
+
+                    if not cat_input:
+                        print("Cancelled.")
+                        continue
+
+                    if cat_input.lower() in ynab_category_map:
+                        selected_cat_id = ynab_category_map[cat_input.lower()]
+
+                        # Use standard search term logic or default?
+                        # Let's use the standard search term logic below but force the '?' prefix
+                        # We break here to let the regex creation flow handle it,
+                        # but we need to signal that it should be a confirm rule.
+                        # Actually, let's just handle it here to keep it simple.
+
+                        search_term = input(
+                            f"Enter text to match for '{cat_input}' (default: '{description}'): "
+                        ).strip()
+                        if not search_term:
+                            search_term = description
+
+                        escaped_term = re.escape(search_term)
+                        final_regex = f"(?i).*{escaped_term}.*"
+
+                        # Add ? prefix
+                        category_rules[final_regex] = f"?{cat_input}"
+                        category_rules_modified = True
+                        save_category_rules(category_rules)
+                        print(
+                            f"Saved Confirmation Rule: '{search_term}' -> '?{cat_input}'"
+                        )
+
+                        fw_txn.category_id = selected_cat_id
+                        break
+                    else:
+                        print(f"Category '{cat_input}' not found in YNAB.")
+                        continue
+
+                if cat_input.lower() == "o" or cat_input.lower().startswith("o "):
+                    # One-off category assignment (no rule creation)
+                    # Reverted to original "One-off" behavior (no rule) per user feedback on "Exact Match"
+                    if cat_input.lower() == "o":
+                        cat_input = input("Enter One-off Category Name: ").strip()
+                    else:
+                        cat_input = cat_input[2:].strip()
+
+                    if not cat_input:
+                        print("Cancelled.")
+                        continue
+
+                    if cat_input.lower() in ynab_category_map:
+                        selected_cat_id = ynab_category_map[cat_input.lower()]
+                        fw_txn.category_id = selected_cat_id
+                        print(
+                            f"One-off category set to '{cat_input}' (No rule created)"
+                        )
+                        break
+                    else:
+                        print(f"Category '{cat_input}' not found in YNAB.")
+                        continue
+
+                if cat_input.lower() == "t":
+                    # Transfer handling
+                    while True:
+                        t_account_name = input("Enter Transfer Account Name: ").strip()
+                        if not t_account_name:
+                            print("Transfer cancelled.")
+                            break
+
+                        # Find account by name (case-insensitive)
+                        found_acc = next(
+                            (
+                                a
+                                for a in ynab_accounts
+                                if a.name.lower() == t_account_name.lower()
+                            ),
+                            None,
+                        )
+
+                        if found_acc:
+                            if found_acc.transfer_payee_id:
+                                fw_txn.payee_id = found_acc.transfer_payee_id
+                                fw_txn.category_id = None
+                                fw_txn.payee_name = (
+                                    None  # Clear payee name to let YNAB use ID
+                                )
+                                print(f"Transfer set to account: '{found_acc.name}'")
+                                break  # Break inner loop
+                            else:
+                                print(
+                                    f"Error: Account '{found_acc.name}' does not have a valid transfer_payee_id."
+                                )
+                        else:
+                            print(f"Account '{t_account_name}' not found in YNAB.")
+
+                    if fw_txn.payee_id:
+                        break  # Break outer loop if transfer set
+
+                if cat_input.lower() == "i":
+                    # Special handling for Inflow
+                    candidates = [
+                        "inflow: ready to assign",
+                        "ready to assign",
+                        "inflow: to be budgeted",
+                        "to be budgeted",
+                    ]
+                    for c in candidates:
+                        if c in ynab_category_map:
+                            cat_input = c
+                            print(f"Selected special category: '{c}'")
+                            break
+                    else:
+                        print(
+                            "Could not find 'Inflow: Ready to Assign' category in YNAB."
+                        )
+                        continue
 
                 if cat_input.lower() == "r":
                     print("Reloading YNAB categories...")
@@ -516,7 +703,11 @@ def sync_transactions(
     if category_rules_modified:
         save_category_rules(category_rules)
 
-    # 3. Duplicate Detection & Filtering
+
+def filter_and_create_transactions(
+    fw_transactions, ynab_transactions, fw_id_to_ynab_id, ynab_client, budget_id
+):
+    """Filters duplicates and creates missing transactions in YNAB."""
     print("Checking for missing transactions...")
 
     # Build a set of existing YNAB transactions for fast lookup
@@ -586,6 +777,39 @@ def sync_transactions(
             print(f"Failed to create transactions: {e}")
     else:
         print("No missing transactions found. YNAB is up to date.")
+
+
+def sync_transactions(
+    finwise_client: FinWiseClient, ynab_client: YNABClient, budget_id: str
+):
+    print("\n--- Transaction Sync ---")
+
+    fw_id_to_ynab_id, fw_id_to_name, ynab_accounts = map_accounts(
+        finwise_client, ynab_client, budget_id
+    )
+    if not fw_id_to_ynab_id:
+        return
+
+    fw_transactions, ynab_transactions = fetch_transactions(
+        finwise_client, ynab_client, budget_id
+    )
+    if fw_transactions is None:
+        return
+
+    process_payee_aliases(fw_transactions, ynab_client, budget_id, fw_id_to_name)
+
+    process_categories(
+        fw_transactions,
+        ynab_client,
+        budget_id,
+        ynab_transactions,
+        fw_id_to_name,
+        ynab_accounts,
+    )
+
+    filter_and_create_transactions(
+        fw_transactions, ynab_transactions, fw_id_to_ynab_id, ynab_client, budget_id
+    )
 
 
 def main():

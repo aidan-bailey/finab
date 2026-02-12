@@ -132,6 +132,7 @@ class YNABClient:
                     currency_code="",  # YNAB doesn't return currency per account
                     finwise_id=None,
                     ynab_id=acc.id,
+                    transfer_payee_id=acc.transfer_payee_id,
                 )
             )
         return accounts
