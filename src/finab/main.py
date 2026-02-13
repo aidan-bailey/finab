@@ -269,11 +269,33 @@ def fetch_transactions(
         return None, None
 
 
-def process_payee_aliases(fw_transactions, ynab_client, budget_id, fw_id_to_name):
+def process_payee_aliases(
+    fw_transactions, ynab_client, budget_id, fw_id_to_name, ynab_accounts
+):
     """Applies payee aliasing rules and prompts user for unknowns."""
     print("Processing payee aliases...")
     payee_rules = load_payee_rules()
     merchant_aliases = load_merchant_aliases()
+
+    # Build account name -> transfer_payee_id map for auto-transfer detection
+    account_transfer_map = {
+        acc.name.lower(): acc.transfer_payee_id
+        for acc in ynab_accounts
+        if acc.transfer_payee_id
+    }
+
+    def apply_transfer_if_account(txn, payee_name):
+        """If payee_name matches a YNAB account name, treat as transfer."""
+        transfer_payee_id = (
+            account_transfer_map.get(payee_name.lower()) if payee_name else None
+        )
+        if transfer_payee_id:
+            txn.payee_id = transfer_payee_id
+            txn.payee_name = None
+            txn.category_id = None
+            print(f"Auto-transfer: '{payee_name}' matches account, set as transfer.")
+            return True
+        return False
 
     # Fetch existing YNAB payees to avoid prompting for known ones
     try:
@@ -296,7 +318,10 @@ def process_payee_aliases(fw_transactions, ynab_client, budget_id, fw_id_to_name
         # Priority 1: Merchant ID Aliasing
         if fw_txn.merchant_id:
             if fw_txn.merchant_id in merchant_aliases:
-                fw_txn.payee_name = merchant_aliases[fw_txn.merchant_id]
+                resolved = merchant_aliases[fw_txn.merchant_id]
+                if apply_transfer_if_account(fw_txn, resolved):
+                    continue
+                fw_txn.payee_name = resolved
                 continue
             if fw_txn.merchant_id in session_ignored_merchants:
                 continue
@@ -332,9 +357,11 @@ def process_payee_aliases(fw_transactions, ynab_client, budget_id, fw_id_to_name
                 merchant_aliases_modified = True
                 save_merchant_aliases(merchant_aliases)  # Save immediately
 
+                print(f"Mapping saved: {fw_txn.merchant_id} -> {target}")
+                if apply_transfer_if_account(fw_txn, target):
+                    continue
                 fw_txn.payee_name = target
                 ynab_payee_names.add(target)
-                print(f"Mapping saved: {fw_txn.merchant_id} -> {target}")
                 continue
             else:
                 session_ignored_merchants.add(fw_txn.merchant_id)
@@ -361,6 +388,8 @@ def process_payee_aliases(fw_transactions, ynab_client, budget_id, fw_id_to_name
                 continue
 
         if matched_rule:
+            if apply_transfer_if_account(fw_txn, final_payee):
+                continue
             fw_txn.payee_name = final_payee
             continue
 
@@ -424,11 +453,13 @@ def process_payee_aliases(fw_transactions, ynab_client, budget_id, fw_id_to_name
                 # Save immediately to ensure safety
                 save_payee_rules(payee_rules)
 
+                print(f"Rule added: Matches '{pattern}' -> Maps to '{target}'")
+                if apply_transfer_if_account(fw_txn, target):
+                    break
                 fw_txn.payee_name = target
                 ynab_payee_names.add(
                     target
                 )  # Add to known list so we don't prompt again for target
-                print(f"Rule added: Matches '{pattern}' -> Maps to '{target}'")
                 break
             except re.error:
                 print(
@@ -917,7 +948,7 @@ def sync_transactions(
     finwise_transactions = [t for t in transactions_to_process if t.import_id]
     if finwise_transactions:
         process_payee_aliases(
-            finwise_transactions, ynab_client, budget_id, fw_id_to_name
+            finwise_transactions, ynab_client, budget_id, fw_id_to_name, ynab_accounts
         )
 
     # Process categories for all transactions
