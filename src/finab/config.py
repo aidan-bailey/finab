@@ -87,14 +87,27 @@ def save_budget_id(budget_id: str) -> None:
     _save_data(data)
 
 
-def load_salt() -> str:
-    """Loads the transaction import ID salt from config.json."""
+def load_import_id_offset() -> str:
+    """Loads the transaction import ID offset from config.json.
+
+    Checks for 'import_id_offset' first, then falls back to legacy 'salt' key,
+    and defaults to 'finab_offset_v1' if neither exists.
+    """
     data = _load_data()
-    return data.get("salt", "_rev7")  # Default to existing if not found
+    if "import_id_offset" in data:
+        return data["import_id_offset"]
+    if "salt" in data:
+        return data["salt"]
+    return "finab_offset_v1"
 
 
-def save_salt(salt: str) -> None:
-    """Saves the transaction import ID salt to config.json."""
+def save_import_id_offset(offset: str) -> None:
+    """Saves the import ID offset to config.json.
+
+    Saves under 'import_id_offset' and removes legacy 'salt' key if present.
+    """
     data = _load_data()
-    data["salt"] = salt
+    data["import_id_offset"] = offset
+    if "salt" in data:
+        del data["salt"]
     _save_data(data)

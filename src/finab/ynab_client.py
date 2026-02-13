@@ -106,8 +106,6 @@ class YNABClient:
 
         return transactions
 
-        return transactions
-
     def get_accounts(self, budget_id: str) -> List[Account]:
         """
         Fetches all accounts from a specific budget.

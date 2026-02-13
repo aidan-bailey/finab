@@ -8,7 +8,6 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
 
 from finab.main import sync_transactions
-from finab.models import Transaction
 
 
 class TestSyncTransactions(unittest.TestCase):
@@ -16,14 +15,14 @@ class TestSyncTransactions(unittest.TestCase):
     @patch("finab.main.load_payee_rules")
     @patch("finab.main.load_merchant_aliases")
     @patch("finab.main.load_category_rules")
-    @patch("finab.main.load_salt")
+    @patch("finab.main.load_import_id_offset")
     @patch("builtins.print")
     @patch("builtins.input")
     def test_sync_transactions_flow(
         self,
         mock_input,
         mock_print,
-        mock_salt,
+        mock_offset,
         mock_cat_rules,
         mock_merch_aliases,
         mock_payee_rules,
@@ -34,7 +33,7 @@ class TestSyncTransactions(unittest.TestCase):
         mock_payee_rules.return_value = []
         mock_merch_aliases.return_value = {}
         mock_cat_rules.return_value = {}
-        mock_salt.return_value = "salt"
+        mock_offset.return_value = "finab_offset_v1"
         mock_input.return_value = ""  # Default to empty input (skip/ignore)
 
         # Clients
@@ -52,6 +51,7 @@ class TestSyncTransactions(unittest.TestCase):
         ynab_acc = MagicMock()
         ynab_acc.ynab_id = "ynab-1"
         ynab_acc.name = "Bank"
+        ynab_acc.transfer_payee_id = "transfer-payee-1"
         mock_ynab_client.get_accounts.return_value = [ynab_acc]
 
         # Categories & Payees
@@ -60,7 +60,7 @@ class TestSyncTransactions(unittest.TestCase):
 
         # Transactions
         # A transaction that needs to be synced
-        fw_txn = MagicMock(spec=Transaction)
+        fw_txn = MagicMock()
         fw_txn.account_id = "fw-1"
         fw_txn.date = date(2023, 1, 1)
         fw_txn.amount = -1000
@@ -70,6 +70,7 @@ class TestSyncTransactions(unittest.TestCase):
         fw_txn.import_id = "import-1"
         fw_txn.category_id = None
         fw_txn.payee_id = None
+        fw_txn.ynab_id = None
 
         mock_fw_client.get_transactions.return_value = [fw_txn]
         mock_ynab_client.get_transactions.return_value = []  # No existing txns
