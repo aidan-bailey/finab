@@ -2,28 +2,7 @@ import unittest
 import hashlib
 from unittest.mock import MagicMock, patch
 from datetime import date
-import sys
-import os
 
-# Stub modules
-if "pydantic" not in sys.modules:
-    mock_pydantic = MagicMock()
-    mock_pydantic.BaseModel = object
-    mock_pydantic.Field = MagicMock()
-    sys.modules["pydantic"] = mock_pydantic
-
-if "dotenv" not in sys.modules:
-    sys.modules["dotenv"] = MagicMock()
-
-# Mock finab.client and finab.ynab_client to avoid their imports
-mock_finab_client = MagicMock()
-sys.modules["finab.client"] = mock_finab_client
-
-mock_ynab_client_module = MagicMock()
-sys.modules["finab.ynab_client"] = mock_ynab_client_module
-
-# Import generate_import_id from main (still lives there) and
-# merge_and_filter_transactions from its new home in transactions.
 from finab.main import generate_import_id
 from finab.transactions import merge_and_filter_transactions
 
