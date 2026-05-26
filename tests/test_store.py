@@ -102,41 +102,6 @@ class TestConfigStoreAccounts(unittest.TestCase):
         self.assertIsNotNone(store.account_by_alias("  discovery bank zar  "))
         self.assertIsNone(store.account_by_alias("Savings"))
 
-    def test_account_seeded_from_ynab_only(self):
-        """add_account with fw_record={} seeds a YNAB-only entry."""
-        store = ConfigStore(self.path)
-        acc = store.add_account(
-            alias="Savings",
-            fw_record={},
-            ynab_record={"id": "yn-savings", "name": "Savings"},
-        )
-        self.assertEqual(acc["finwise"], {})
-        # Reload and verify it persists
-        store2 = ConfigStore(self.path)
-        found = store2.account_by_ynab_id("yn-savings")
-        self.assertIsNotNone(found)
-        self.assertEqual(found["alias"], "Savings")
-        # FinWise lookup misses since no FinWise side
-        self.assertIsNone(store2.account_by_finwise_id("nothing"))
-
-    def test_attach_finwise_to_account_upgrades_seeded_entry(self):
-        store = ConfigStore(self.path)
-        seeded = store.add_account(
-            alias="Savings",
-            fw_record={},
-            ynab_record={"id": "yn-savings", "name": "Savings"},
-        )
-        store.attach_finwise_to_account(
-            seeded["id"],
-            {"id": "fw-savings", "name": "Savings"},
-        )
-
-        store2 = ConfigStore(self.path)
-        found = store2.account_by_finwise_id("fw-savings")
-        self.assertIsNotNone(found)
-        self.assertEqual(found["id"], seeded["id"])
-        self.assertEqual(found["finwise"]["name"], "Savings")
-
 
 class TestConfigStoreMerchants(unittest.TestCase):
     def setUp(self):
@@ -183,27 +148,6 @@ class TestConfigStoreMerchants(unittest.TestCase):
         self.assertIsNotNone(store.merchant_by_alias("  pick n pay  "))
         # Different alias misses
         self.assertIsNone(store.merchant_by_alias("Checkers"))
-
-    def test_merchant_seeded_from_ynab_only(self):
-        """add_merchant with fw_record={} seeds a YNAB-only entry."""
-        store = ConfigStore(self.path)
-        m = store.add_merchant(
-            alias="Standalone",
-            fw_record={},
-            ynab_record={"id": "yn-stand", "name": "Standalone"},
-        )
-        self.assertEqual(m["finwise"], {})
-
-        store2 = ConfigStore(self.path)
-        found = store2.merchant_by_ynab_id("yn-stand")
-        self.assertIsNotNone(found)
-        self.assertEqual(found["alias"], "Standalone")
-
-        # Attach a FinWise side later: lookup by fw_id works.
-        store2.attach_finwise_to_merchant(found["id"], {"id": "fw-stand", "name": "Stand"})
-        store3 = ConfigStore(self.path)
-        upgraded = store3.merchant_by_finwise_id("fw-stand")
-        self.assertEqual(upgraded["id"], found["id"])
 
     def test_attach_finwise_to_merchant_persists(self):
         store = ConfigStore(self.path)

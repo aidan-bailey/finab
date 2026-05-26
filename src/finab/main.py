@@ -351,27 +351,7 @@ def sync_accounts(
 
     store.refresh_records(fw_accounts=fw_accounts, ynab_accounts=ynab_accounts)
 
-    # Prelude: seed a store entry for every YNAB account not yet represented.
-    # Each seeded entry has the YNAB record but an empty `finwise` slot;
-    # subsequent FinWise iteration can attach when the user picks the alias.
-    seeded = 0
-    for yn in ynab_accounts:
-        if not yn.ynab_id or store.account_by_ynab_id(yn.ynab_id):
-            continue
-        store.add_account(
-            alias=yn.name,
-            fw_record={},
-            ynab_record={
-                "id": yn.ynab_id,
-                "name": yn.name,
-                "type": yn.type,
-                "balance": yn.balance,
-                "transfer_payee_id": yn.transfer_payee_id,
-            },
-        )
-        seeded += 1
-    if seeded:
-        print(f"Seeded {seeded} YNAB account(s) into the store.")
+    ynab_by_name = {normalize_alias(a.name): a for a in ynab_accounts}
 
     for fw_acc in fw_accounts:
         if store.account_by_finwise_id(fw_acc.finwise_id):
@@ -382,22 +362,27 @@ def sync_accounts(
             default=fw_acc.name,
         )
 
-        fw_record = {
-            "id": fw_acc.finwise_id,
-            "name": fw_acc.name,
-            "type": fw_acc.type,
-            "balance": fw_acc.balance,
-            "currency_code": fw_acc.currency_code,
-        }
-
-        # Alias matches an existing store entry (seeded or otherwise)? Attach.
-        existing = store.account_by_alias(alias)
-        if existing:
-            store.attach_finwise_to_account(existing["id"], fw_record)
-            print(f"Linked '{fw_acc.name}' -> existing account '{existing['alias']}'")
+        match = ynab_by_name.get(normalize_alias(alias))
+        if match:
+            fw_record = {
+                "id": fw_acc.finwise_id,
+                "name": fw_acc.name,
+                "type": fw_acc.type,
+                "balance": fw_acc.balance,
+                "currency_code": fw_acc.currency_code,
+            }
+            ynab_record = {
+                "id": match.ynab_id,
+                "name": match.name,
+                "type": match.type,
+                "balance": match.balance,
+                "transfer_payee_id": match.transfer_payee_id,
+            }
+            store.add_account(alias=alias, fw_record=fw_record, ynab_record=ynab_record)
+            print(f"Linked '{fw_acc.name}' -> existing YNAB account '{match.name}'")
             continue
 
-        # No existing entry — create the YNAB account from scratch and store.
+        # Create on YNAB side
         try:
             starting_balance = _calculate_starting_balance(fw_acc, fw_client)
             fw_acc_for_create = _account_with_overrides(
@@ -405,6 +390,13 @@ def sync_accounts(
             )
             response = ynab_client.create_account(budget_id, fw_acc_for_create)
             new_record = response.data.account
+            fw_record = {
+                "id": fw_acc.finwise_id,
+                "name": fw_acc.name,
+                "type": fw_acc.type,
+                "balance": fw_acc.balance,
+                "currency_code": fw_acc.currency_code,
+            }
             store.add_account(
                 alias=alias,
                 fw_record=fw_record,
@@ -442,27 +434,6 @@ def sync_merchants(
         return
 
     store.refresh_records(ynab_payees=ynab_payees)
-
-    # Prelude: seed a store entry for every regular YNAB payee not yet
-    # represented. Skip deleted payees and transfer payees (transfer payees
-    # are surfaced via their owning account — see _link_account_transfer_payee).
-    seeded = 0
-    for p in ynab_payees:
-        if getattr(p, "deleted", False):
-            continue
-        if getattr(p, "transfer_account_id", None) is not None:
-            continue
-        pid = getattr(p, "id", None)
-        if pid is None or store.merchant_by_ynab_id(str(pid)):
-            continue
-        store.add_merchant(
-            alias=p.name,
-            fw_record={},
-            ynab_record=to_dict(p),
-        )
-        seeded += 1
-    if seeded:
-        print(f"Seeded {seeded} YNAB payee(s) into the store.")
 
     fw_merchants = _extract_distinct_merchants(fw_transactions)
     unknown = [m for m in fw_merchants if not store.merchant_by_finwise_id(m["id"])]

@@ -59,28 +59,20 @@ class ConfigStore:
 
     def _rebuild_indexes(self) -> None:
         self._fw_account_index: dict[str, str] = {}
-        self._ynab_account_index: dict[str, str] = {}
         self._alias_account_index: dict[str, str] = {}
         self._fw_merchant_index: dict[str, str] = {}
-        self._ynab_merchant_index: dict[str, str] = {}
         self._alias_merchant_index: dict[str, str] = {}
 
         for acc in self._data.get("accounts", {}).values():
             fw = acc.get("finwise", {})
             if fw.get("id"):
                 self._fw_account_index[fw["id"]] = acc["id"]
-            yn = acc.get("ynab", {})
-            if yn.get("id"):
-                self._ynab_account_index[str(yn["id"])] = acc["id"]
             if acc.get("alias"):
                 self._alias_account_index[normalize_alias(acc["alias"])] = acc["id"]
 
         for m in self._data.get("merchants", {}).values():
             for fw_id in m.get("finwise", {}):
                 self._fw_merchant_index[fw_id] = m["id"]
-            yn = m.get("ynab", {})
-            if yn.get("id"):
-                self._ynab_merchant_index[str(yn["id"])] = m["id"]
             if m.get("alias"):
                 self._alias_merchant_index[normalize_alias(m["alias"])] = m["id"]
 
@@ -91,14 +83,11 @@ class ConfigStore:
         return self._data["merchants"].values()
 
     def add_account(self, alias: str, fw_record: dict, ynab_record: dict) -> dict:
-        """Create a new account entry. `fw_record` may be {} when seeding from
-        the YNAB side; in that case the account has no FinWise counterpart yet
-        and `attach_finwise_to_account` can be used later."""
         internal_id = str(uuid.uuid4())
         account = {
             "id": internal_id,
             "alias": alias,
-            "finwise": dict(fw_record) if fw_record else {},
+            "finwise": dict(fw_record),
             "ynab": dict(ynab_record),
         }
         self._data["accounts"][internal_id] = account
@@ -106,20 +95,8 @@ class ConfigStore:
         self._save()
         return account
 
-    def attach_finwise_to_account(self, account_id: str, fw_record: dict) -> None:
-        account = self._data["accounts"][account_id]
-        account["finwise"] = dict(fw_record)
-        self._rebuild_indexes()
-        self._save()
-
     def account_by_finwise_id(self, fw_id: str) -> Optional[dict]:
         internal_id = self._fw_account_index.get(fw_id)
-        if not internal_id:
-            return None
-        return self._data["accounts"][internal_id]
-
-    def account_by_ynab_id(self, ynab_id: str) -> Optional[dict]:
-        internal_id = self._ynab_account_index.get(str(ynab_id))
         if not internal_id:
             return None
         return self._data["accounts"][internal_id]
@@ -131,18 +108,14 @@ class ConfigStore:
         return self._data["accounts"][internal_id]
 
     def add_merchant(self, alias: str, fw_record: dict, ynab_record: dict) -> dict:
-        """Create a new merchant entry. `fw_record` may be {} when seeding from
-        the YNAB side; in that case the merchant has no FinWise children yet
-        and `attach_finwise_to_merchant` can be used later."""
         internal_id = str(uuid.uuid4())
+        fw_id = fw_record["id"]
         merchant = {
             "id": internal_id,
             "alias": alias,
-            "finwise": {},
+            "finwise": {fw_id: dict(fw_record)},
             "ynab": dict(ynab_record),
         }
-        if fw_record:
-            merchant["finwise"][fw_record["id"]] = dict(fw_record)
         self._data["merchants"][internal_id] = merchant
         self._rebuild_indexes()
         self._save()
@@ -156,12 +129,6 @@ class ConfigStore:
 
     def merchant_by_finwise_id(self, fw_id: str) -> Optional[dict]:
         internal_id = self._fw_merchant_index.get(fw_id)
-        if not internal_id:
-            return None
-        return self._data["merchants"][internal_id]
-
-    def merchant_by_ynab_id(self, ynab_id: str) -> Optional[dict]:
-        internal_id = self._ynab_merchant_index.get(str(ynab_id))
         if not internal_id:
             return None
         return self._data["merchants"][internal_id]
