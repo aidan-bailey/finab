@@ -589,6 +589,73 @@ def merge_and_filter_transactions(
     return transactions_to_process
 
 
+def collect_split_subtransactions(fw_txn, ynab_category_map):
+    """
+    Walk the user through splitting a transaction across multiple categories.
+
+    Sub-amounts use the same sign as the parent and must sum to the parent's
+    amount. Returns a list of subtransaction dicts, or None if the user
+    cancelled before completing the split.
+    """
+    total = fw_txn.amount
+    sign = -1 if total < 0 else 1
+    remaining = total
+    subs = []
+
+    print(f"\nSplitting transaction. Total: {total / 1000:.2f}")
+
+    while remaining != 0:
+        remaining_abs = abs(remaining) / 1000.0
+        print(f"\nRemaining: {remaining_abs:.2f} ({len(subs)} split(s) so far)")
+
+        cat_input = input(
+            "Category for next split (Enter to cancel split): "
+        ).strip()
+        if not cat_input:
+            print("Split cancelled.")
+            return None
+
+        if cat_input.lower() not in ynab_category_map:
+            print(f"Category '{cat_input}' not found in YNAB.")
+            continue
+
+        amt_input = input(
+            f"Amount for '{cat_input}' (positive value, Enter for remaining {remaining_abs:.2f}): "
+        ).strip()
+
+        if not amt_input:
+            amount = remaining
+        else:
+            try:
+                amount_abs = float(amt_input)
+            except ValueError:
+                print("Invalid amount. Please enter a number.")
+                continue
+
+            if amount_abs <= 0:
+                print("Amount must be positive.")
+                continue
+
+            amount = sign * int(round(amount_abs * 1000))
+
+            if abs(amount) > abs(remaining):
+                print(
+                    f"Amount {amount_abs:.2f} exceeds remaining {remaining_abs:.2f}."
+                )
+                continue
+
+        subs.append(
+            {
+                "amount": amount,
+                "category_id": ynab_category_map[cat_input.lower()],
+            }
+        )
+        remaining -= amount
+        print(f"Added split: '{cat_input}' -> {amount / 1000:.2f}")
+
+    return subs
+
+
 def process_categories(
     transactions_to_process,
     ynab_client,
@@ -612,6 +679,21 @@ def process_categories(
     except Exception as e:
         print(f"Failed to fetch categories: {e}")
 
+    inflow_category_id = None
+    for name in (
+        "inflow: ready to assign",
+        "ready to assign",
+        "inflow: to be budgeted",
+        "to be budgeted",
+    ):
+        if name in ynab_category_map:
+            inflow_category_id = ynab_category_map[name]
+            break
+
+    transfer_payee_ids = {
+        acc.transfer_payee_id for acc in ynab_accounts if acc.transfer_payee_id
+    }
+
     if ynab_category_map:
         for fw_txn in transactions_to_process:
             # Skip if already has a category (shouldn't happen, but safety check)
@@ -620,39 +702,55 @@ def process_categories(
 
             # Use original description (memo) for matching
             description = fw_txn.memo or ""
-            if not description:
-                continue
 
             matched_category_id = None
             confirmation_needed = False
             suggested_category_name = None
 
             # Check existing rules
-            for pattern, cat_name in category_rules.items():
-                try:
-                    if re.search(pattern, description, re.IGNORECASE):
-                        check_name = cat_name
-                        is_confirm = False
+            if description:
+                for pattern, cat_name in category_rules.items():
+                    try:
+                        if re.search(pattern, description, re.IGNORECASE):
+                            check_name = cat_name
+                            is_confirm = False
 
-                        if check_name.startswith("?"):
-                            check_name = check_name[1:]
-                            is_confirm = True
+                            if check_name.startswith("?"):
+                                check_name = check_name[1:]
+                                is_confirm = True
 
-                        if check_name.lower() in ynab_category_map:
-                            matched_category_id = ynab_category_map[check_name.lower()]
-                            if is_confirm:
-                                confirmation_needed = True
-                                suggested_category_name = check_name
-                            break
-                        else:
-                            print(
-                                f"Warning: Rule matches '{cat_name}', but category not found in YNAB."
-                            )
-                except re.error:
-                    continue
+                            if check_name.lower() in ynab_category_map:
+                                matched_category_id = ynab_category_map[check_name.lower()]
+                                if is_confirm:
+                                    confirmation_needed = True
+                                    suggested_category_name = check_name
+                                break
+                            else:
+                                print(
+                                    f"Warning: Rule matches '{cat_name}', but category not found in YNAB."
+                                )
+                    except re.error:
+                        continue
 
             if matched_category_id and not confirmation_needed:
                 fw_txn.category_id = matched_category_id
+                continue
+
+            # Positive amounts are inflows. Transfers carry a transfer_payee_id and
+            # must stay category-less, so skip those.
+            if (
+                matched_category_id is None
+                and fw_txn.amount > 0
+                and inflow_category_id
+                and fw_txn.payee_id not in transfer_payee_ids
+            ):
+                fw_txn.category_id = inflow_category_id
+                print(
+                    f"Auto-assigned inflow: {fw_txn.payee_name} ({fw_txn.amount / 1000:.2f})"
+                )
+                continue
+
+            if not description:
                 continue
 
             if description in session_ignored_categories:
@@ -680,7 +778,7 @@ def process_categories(
                 if confirmation_needed and suggested_category_name:
                     prompt_text = f"Enter Category Name (Press Enter to confirm '{suggested_category_name}', "
 
-                prompt_text += "'r' to reload, 'i' Inflow, 't' Transfer, 'o' One-off, 'c' Confirm-Rule): "
+                prompt_text += "'r' to reload, 'i' Inflow, 't' Transfer, 'o' One-off, 'c' Confirm-Rule, 's' Split): "
 
                 cat_input = input(prompt_text).strip()
 
@@ -750,6 +848,18 @@ def process_categories(
                     else:
                         print(f"Category '{cat_input}' not found in YNAB.")
                         continue
+
+                if cat_input.lower() == "s":
+                    # Split across multiple categories (no rule creation)
+                    subs = collect_split_subtransactions(fw_txn, ynab_category_map)
+                    if subs:
+                        fw_txn.subtransactions = subs
+                        fw_txn.category_id = None
+                        print(
+                            f"Transaction split into {len(subs)} sub-transaction(s)."
+                        )
+                        break
+                    continue
 
                 if cat_input.lower() == "t":
                     # Transfer handling
@@ -889,10 +999,9 @@ def sync_changes_to_ynab(transactions_to_sync, ynab_client, budget_id, ynab_acco
 
         # Check if it's an update or create
         if txn.ynab_id:
-            # It's an update
-            # Only update if category_id is set (since we only care about categorizing)
-            # Or maybe update other fields? For now, just category.
-            if txn.category_id:
+            # Update if a category was assigned or if the user split it into
+            # multiple sub-categories (parent category stays None for splits).
+            if txn.category_id or txn.subtransactions:
                 transactions_to_update.append(txn)
         else:
             # It's a create
