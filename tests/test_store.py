@@ -90,6 +90,18 @@ class TestConfigStoreAccounts(unittest.TestCase):
             store._fw_account_index["fw-A"], store._fw_account_index["fw-B"]
         )
 
+    def test_account_by_alias_normalizes_lookup(self):
+        store = ConfigStore(self.path)
+        store.add_account(
+            alias="Discovery Bank ZAR",
+            fw_record={"id": "fw-1", "name": "Discovery"},
+            ynab_record={"id": "yn-1", "transfer_payee_id": "tp-1"},
+        )
+
+        self.assertIsNotNone(store.account_by_alias("Discovery Bank ZAR"))
+        self.assertIsNotNone(store.account_by_alias("  discovery bank zar  "))
+        self.assertIsNone(store.account_by_alias("Savings"))
+
 
 class TestConfigStoreMerchants(unittest.TestCase):
     def setUp(self):

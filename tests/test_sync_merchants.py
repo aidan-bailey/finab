@@ -56,6 +56,32 @@ class TestSyncMerchants(unittest.TestCase):
         p.model_dump.return_value = {"id": id, "name": name}
         return p
 
+    @patch("finab.main.input", create=True, return_value="Discovery Bank ZAR")
+    def test_links_to_transfer_payee_when_alias_matches_own_account(self, _input):
+        # Account in the store with a known transfer_payee_id
+        self.store.add_account(
+            alias="Discovery Bank ZAR",
+            fw_record={"id": "fw-acc-1", "name": "Discovery"},
+            ynab_record={"id": "yn-acc-1", "transfer_payee_id": "tp-1"},
+        )
+        self.store = ConfigStore(self.config_path)
+
+        # The transfer payee exists in YNAB; a same-named regular payee does NOT
+        # exist (typical case — only "Transfer: Discovery Bank ZAR" exists).
+        transfer_payee = self._ynab_payee("tp-1", "Transfer: Discovery Bank ZAR")
+        self.fw_client.get_transactions.return_value = [self._fw_txn("fw-mx", "X")]
+        self.ynab_client.get_payees.return_value = [transfer_payee]
+
+        from finab.main import sync_merchants
+        sync_merchants(self.fw_client, self.ynab_client, "bid", self.store)
+
+        # No regular payee was created — the transfer payee was linked.
+        self.ynab_client.create_payee.assert_not_called()
+        m = self.store.merchant_by_finwise_id("fw-mx")
+        self.assertIsNotNone(m)
+        self.assertEqual(m["alias"], "Discovery Bank ZAR")
+        self.assertEqual(m["ynab"]["id"], "tp-1")
+
     @patch("finab.main.input", create=True, return_value="Spar")
     def test_attaches_second_finwise_to_existing_merchant(self, _input):
         # Existing merchant with one FinWise child

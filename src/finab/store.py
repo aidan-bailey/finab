@@ -59,6 +59,7 @@ class ConfigStore:
 
     def _rebuild_indexes(self) -> None:
         self._fw_account_index: dict[str, str] = {}
+        self._alias_account_index: dict[str, str] = {}
         self._fw_merchant_index: dict[str, str] = {}
         self._alias_merchant_index: dict[str, str] = {}
 
@@ -66,6 +67,8 @@ class ConfigStore:
             fw = acc.get("finwise", {})
             if fw.get("id"):
                 self._fw_account_index[fw["id"]] = acc["id"]
+            if acc.get("alias"):
+                self._alias_account_index[normalize_alias(acc["alias"])] = acc["id"]
 
         for m in self._data.get("merchants", {}).values():
             for fw_id in m.get("finwise", {}):
@@ -94,6 +97,12 @@ class ConfigStore:
 
     def account_by_finwise_id(self, fw_id: str) -> Optional[dict]:
         internal_id = self._fw_account_index.get(fw_id)
+        if not internal_id:
+            return None
+        return self._data["accounts"][internal_id]
+
+    def account_by_alias(self, alias: str) -> Optional[dict]:
+        internal_id = self._alias_account_index.get(normalize_alias(alias))
         if not internal_id:
             return None
         return self._data["accounts"][internal_id]

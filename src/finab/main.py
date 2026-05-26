@@ -108,6 +108,36 @@ def _calculate_starting_balance(fw_acc, fw_client) -> int:
     return int(fw_acc.balance - adjustment)
 
 
+def _link_account_transfer_payee(
+    store: ConfigStore,
+    ynab_payees,
+    alias: str,
+    fw_record: dict,
+) -> bool:
+    """If `alias` matches a stored account, link the merchant to that
+    account's transfer payee (the "Transfer: <name>" payee YNAB auto-creates
+    per account). Returns True on success — caller should not fall through
+    to regular payee lookup."""
+    account_match = store.account_by_alias(alias)
+    if not account_match:
+        return False
+    transfer_payee_id = account_match.get("ynab", {}).get("transfer_payee_id")
+    if not transfer_payee_id:
+        return False
+    transfer_payee = next(
+        (p for p in ynab_payees if str(getattr(p, "id", "")) == str(transfer_payee_id)),
+        None,
+    )
+    if not transfer_payee:
+        return False
+    store.add_merchant(
+        alias=alias,
+        fw_record=fw_record,
+        ynab_record=to_dict(transfer_payee),
+    )
+    return True
+
+
 def _record_merchant_alias(
     store: ConfigStore,
     ynab_client: YNABClient,
@@ -117,9 +147,7 @@ def _record_merchant_alias(
     fw_merchant_name: Optional[str] = None,
 ) -> None:
     """Defensive fallback used by the transaction pipeline when a merchant id
-    appears that wasn't covered by Phase 2. Does the same 3-way fork as
-    sync_merchants: attach to existing merchant, link existing YNAB payee, or
-    create a new YNAB payee."""
+    appears that wasn't covered by Phase 2. Same 4-way fork as sync_merchants."""
     fw_record = {"id": fw_merchant_id, "name": fw_merchant_name or fw_merchant_id}
 
     # 1. Existing merchant by alias?
@@ -128,11 +156,16 @@ def _record_merchant_alias(
         store.attach_finwise_to_merchant(existing["id"], fw_record)
         return
 
-    # 2. Existing YNAB payee by name?
     try:
         ynab_payees = ynab_client.get_payees(budget_id)
     except Exception:
         ynab_payees = []
+
+    # 2. Account-as-transfer: alias matches one of the user's own accounts.
+    if _link_account_transfer_payee(store, ynab_payees, alias, fw_record):
+        return
+
+    # 3. Existing YNAB payee by name?
     ynab_match = next(
         (p for p in ynab_payees if normalize_alias(p.name) == normalize_alias(alias)),
         None,
@@ -145,7 +178,7 @@ def _record_merchant_alias(
         )
         return
 
-    # 3. Create new YNAB payee
+    # 4. Create new YNAB payee
     try:
         new_payee = ynab_client.create_payee(budget_id, alias)
         store.add_merchant(
@@ -391,6 +424,12 @@ def sync_merchants(
                 f"Attached FinWise merchant '{fw_m['id']}' to existing "
                 f"'{existing['alias']}'"
             )
+            continue
+
+        # Alias matches a stored account? Link to that account's transfer
+        # payee instead of creating a duplicate regular payee.
+        if _link_account_transfer_payee(store, ynab_payees, alias, fw_m):
+            print(f"Linked merchant '{alias}' -> transfer payee for own account")
             continue
 
         ynab_match = ynab_by_name.get(normalize_alias(alias))
