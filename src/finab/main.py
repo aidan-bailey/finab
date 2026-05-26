@@ -102,6 +102,25 @@ def _calculate_starting_balance(fw_acc, fw_client) -> int:
     return int(fw_acc.balance - adjustment)
 
 
+def _extract_distinct_merchants(fw_transactions) -> list[dict]:
+    """Walk FinWise transactions and emit one record per unique merchant_id.
+
+    FinWise has no merchant endpoint; merchant data lives on transactions.
+    """
+    seen: dict[str, dict] = {}
+    for t in fw_transactions:
+        mid = getattr(t, "merchant_id", None)
+        if not mid:
+            continue
+        if mid in seen:
+            continue
+        seen[mid] = {
+            "id": mid,
+            "name": getattr(t, "merchant_name", None) or mid,
+        }
+    return list(seen.values())
+
+
 def _account_with_overrides(fw_acc, name: str, balance: int):
     """Return a shallow copy of fw_acc with name and balance overridden,
     suitable to pass to ynab_client.create_account."""
@@ -175,6 +194,79 @@ def sync_accounts(
             print(f"Created YNAB account '{alias}'")
         except Exception as e:
             print(f"Failed to create YNAB account '{alias}': {e}")
+            continue
+
+
+def sync_merchants(
+    fw_client: FinWiseClient,
+    ynab_client: YNABClient,
+    budget_id: str,
+    store: ConfigStore,
+):
+    """Phase 2: ensure every distinct FinWise merchant has a matching entity
+    in the store and a corresponding YNAB payee, creating new YNAB payees
+    when needed."""
+    print("\n--- Merchant Sync ---")
+
+    start_date = date.today().replace(day=1)
+
+    try:
+        fw_transactions = fw_client.get_transactions(start_date=start_date)
+    except Exception as e:
+        print(f"Failed to fetch FinWise transactions: {e}")
+        return
+
+    try:
+        ynab_payees = ynab_client.get_payees(budget_id)
+    except Exception as e:
+        print(f"Failed to fetch YNAB payees: {e}")
+        return
+
+    store.refresh_records(ynab_payees=ynab_payees)
+
+    fw_merchants = _extract_distinct_merchants(fw_transactions)
+    print(f"Distinct FinWise merchants in period: {len(fw_merchants)}")
+
+    ynab_by_name = {_normalize_alias(p.name): p for p in ynab_payees}
+
+    for fw_m in fw_merchants:
+        if store.merchant_by_finwise_id(fw_m["id"]):
+            continue
+
+        alias = _prompt_alias_required(
+            f"Enter YNAB payee for merchant '{fw_m['name']}' (id={fw_m['id']})",
+            default=fw_m["name"],
+        )
+
+        existing = store.merchant_by_alias(alias)
+        if existing:
+            store.attach_finwise_to_merchant(existing["id"], fw_m)
+            print(
+                f"Attached FinWise merchant '{fw_m['name']}' to existing "
+                f"'{existing['alias']}'"
+            )
+            continue
+
+        ynab_match = ynab_by_name.get(_normalize_alias(alias))
+        if ynab_match:
+            store.add_merchant(
+                alias=alias,
+                fw_record=fw_m,
+                ynab_record=to_dict(ynab_match),
+            )
+            print(f"Linked merchant '{alias}' -> existing YNAB payee")
+            continue
+
+        try:
+            new_payee = ynab_client.create_payee(budget_id, alias)
+            store.add_merchant(
+                alias=alias,
+                fw_record=fw_m,
+                ynab_record=to_dict(new_payee),
+            )
+            print(f"Created YNAB payee '{alias}'")
+        except Exception as e:
+            print(f"Failed to create YNAB payee '{alias}': {e}")
             continue
 
 
