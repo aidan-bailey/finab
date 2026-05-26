@@ -395,6 +395,48 @@ class _PendingQueue:
             return False
 
 
+def _update_merchant_memory(store: ConfigStore, merchant: dict, txn) -> None:
+    """Update the merchant's categories_used (frequency map) and
+    last_processing (split structure for Enter-repeat) based on the just-
+    categorized transaction. Persists via store.set_merchant_memory."""
+    subs = list(getattr(txn, "subtransactions", []) or [])
+    if subs:
+        splits = [
+            {
+                "category_id": s["category_id"],
+                "amount_milliunits": s["amount"],
+                "memo": s.get("memo", "") or "",
+            }
+            for s in subs
+        ]
+    else:
+        splits = [
+            {
+                "category_id": txn.category_id,
+                "amount_milliunits": txn.amount,
+                "memo": getattr(txn, "memo", "") or "",
+            }
+        ]
+
+    counts = dict(merchant.get("categories_used", {}) or {})
+    for s in splits:
+        cid = s["category_id"]
+        if cid:
+            counts[cid] = counts.get(cid, 0) + 1
+
+    last_processing = {
+        "amount_milliunits": txn.amount,
+        "parent_memo": getattr(txn, "memo", "") or "",
+        "splits": splits,
+    }
+
+    store.set_merchant_memory(
+        merchant["id"],
+        categories_used=counts,
+        last_processing=last_processing,
+    )
+
+
 def sync_transactions(
     fw_client: FinWiseClient,
     ynab_client: YNABClient,

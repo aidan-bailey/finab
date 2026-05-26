@@ -380,5 +380,83 @@ class TestCollectSplits(unittest.TestCase):
         self.assertIsNone(result)
 
 
+from finab.transactions import _update_merchant_memory
+
+
+class TestUpdateMerchantMemory(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmpdir.name) / "config.json"
+        self.store = ConfigStore(self.path)
+        self.merchant = self.store.add_merchant(
+            alias="Spar",
+            fw_record={"id": "fw-spar", "name": "Spar"},
+            ynab_record={"id": "yn-spar", "name": "Spar"},
+        )
+        self.store = ConfigStore(self.path)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _single_txn(self, amount, cat_id, memo=""):
+        t = MagicMock()
+        t.amount = amount
+        t.category_id = cat_id
+        t.subtransactions = []
+        t.memo = memo
+        return t
+
+    def _split_txn(self, amount, subs, parent_memo=""):
+        t = MagicMock()
+        t.amount = amount
+        t.category_id = None
+        t.subtransactions = subs
+        t.memo = parent_memo
+        return t
+
+    def test_single_category_updates_count_and_last(self):
+        txn = self._single_txn(-50000, "cat-A", memo="receipt")
+        _update_merchant_memory(self.store, self.merchant, txn)
+
+        store2 = ConfigStore(self.path)
+        m = store2.merchant_by_finwise_id("fw-spar")
+        self.assertEqual(m["categories_used"], {"cat-A": 1})
+        self.assertEqual(m["last_processing"]["amount_milliunits"], -50000)
+        self.assertEqual(m["last_processing"]["parent_memo"], "receipt")
+        self.assertEqual(len(m["last_processing"]["splits"]), 1)
+        self.assertEqual(m["last_processing"]["splits"][0]["category_id"], "cat-A")
+        self.assertEqual(m["last_processing"]["splits"][0]["amount_milliunits"], -50000)
+
+    def test_split_increments_each_category(self):
+        subs = [
+            {"category_id": "cat-A", "amount": -30000, "memo": "fuel"},
+            {"category_id": "cat-B", "amount": -20000, "memo": "snacks"},
+        ]
+        txn = self._split_txn(-50000, subs, parent_memo="receipt")
+        _update_merchant_memory(self.store, self.merchant, txn)
+
+        store2 = ConfigStore(self.path)
+        m = store2.merchant_by_finwise_id("fw-spar")
+        self.assertEqual(m["categories_used"], {"cat-A": 1, "cat-B": 1})
+        self.assertEqual(len(m["last_processing"]["splits"]), 2)
+        self.assertEqual(m["last_processing"]["splits"][0]["category_id"], "cat-A")
+        self.assertEqual(m["last_processing"]["splits"][0]["amount_milliunits"], -30000)
+        self.assertEqual(m["last_processing"]["splits"][0]["memo"], "fuel")
+
+    def test_increment_runs_cumulatively(self):
+        # First processing
+        _update_merchant_memory(
+            self.store, self.merchant, self._single_txn(-1000, "cat-A")
+        )
+        # Reload and do another
+        self.store = ConfigStore(self.path)
+        merchant2 = self.store.merchant_by_finwise_id("fw-spar")
+        _update_merchant_memory(self.store, merchant2, self._single_txn(-2000, "cat-A"))
+
+        store3 = ConfigStore(self.path)
+        m = store3.merchant_by_finwise_id("fw-spar")
+        self.assertEqual(m["categories_used"]["cat-A"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
