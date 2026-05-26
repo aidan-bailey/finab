@@ -42,14 +42,8 @@ def _find_inflow_category(categories) -> Optional[str]:
     for c in categories:
         if getattr(c, "hidden", False) or getattr(c, "deleted", False):
             continue
-        # Handle both real objects and MagicMock test objects.
-        # MagicMock stores 'name=' kwarg in _mock_name, not as a real attribute.
-        name_val = getattr(c, "name", None)
-        if hasattr(name_val, "_mock_name"):
-            # It's a MagicMock, get the stored name
-            name_val = getattr(c, "_mock_name", "")
-        name = str(name_val).lower()
-        by_name[name] = c
+        name = getattr(c, "name", "") or ""
+        by_name[name.lower()] = c
     for candidate in _INFLOW_CATEGORY_NAMES:
         c = by_name.get(candidate)
         if c is not None:

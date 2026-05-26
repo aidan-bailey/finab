@@ -69,22 +69,29 @@ class TestAutoPathHelpers(unittest.TestCase):
         self.assertFalse(_is_transfer({"ynab": {}}))
         self.assertFalse(_is_transfer(None))
 
+    def _category(self, id, name, hidden=False, deleted=False):
+        # MagicMock(name=...) sets the mock's debug name, not the .name attr.
+        # Construct then assign to get a real .name attribute.
+        c = MagicMock(id=id, hidden=hidden, deleted=deleted)
+        c.name = name
+        return c
+
     def test_find_inflow_category_prefers_ready_to_assign(self):
         cats = [
-            MagicMock(id="c1", name="Inflow: To be Budgeted", hidden=False, deleted=False),
-            MagicMock(id="c2", name="Inflow: Ready to Assign", hidden=False, deleted=False),
+            self._category("c1", "Inflow: To be Budgeted"),
+            self._category("c2", "Inflow: Ready to Assign"),
         ]
         self.assertEqual(_find_inflow_category(cats), "c2")
 
     def test_find_inflow_category_skips_hidden_or_deleted(self):
         cats = [
-            MagicMock(id="c1", name="Inflow: Ready to Assign", hidden=True, deleted=False),
-            MagicMock(id="c2", name="Inflow: Ready to Assign", hidden=False, deleted=True),
+            self._category("c1", "Inflow: Ready to Assign", hidden=True),
+            self._category("c2", "Inflow: Ready to Assign", deleted=True),
         ]
         self.assertIsNone(_find_inflow_category(cats))
 
     def test_find_inflow_category_returns_none_when_absent(self):
-        cats = [MagicMock(id="c1", name="Groceries", hidden=False, deleted=False)]
+        cats = [self._category("c1", "Groceries")]
         self.assertIsNone(_find_inflow_category(cats))
 
 
