@@ -3,6 +3,7 @@
 This module owns the per-transaction prompt loop, the pending queue,
 and the orchestration of fetch -> dedup -> categorize -> push.
 """
+import sys
 from datetime import date
 from typing import Any, Optional
 
@@ -98,6 +99,92 @@ def merge_and_filter_transactions(fw_transactions, ynab_transactions, store: Con
         fw_txn.account_id = ynab_account_id
         out.append(fw_txn)
     return out
+
+
+# --- Color helpers (mirror main.py; kept local to avoid cross-module imports). ---
+def _color(code: str, s: str) -> str:
+    if not sys.stdout.isatty():
+        return s
+    return f"\033[{code}m{s}\033[0m"
+
+def _bold(s: str) -> str:   return _color("1", s)
+def _dim(s: str) -> str:    return _color("2", s)
+def _cyan(s: str) -> str:   return _color("36", s)
+def _yellow(s: str) -> str: return _color("33", s)
+
+
+def _pick_category(
+    merchant: dict,
+    ynab_categories: list,
+    category_groups: list,
+    ynab_client: YNABClient,
+    budget_id: str,
+) -> Optional[str]:
+    """Show the per-merchant category picker. Returns the chosen YNAB
+    category id, or None if the user backed out."""
+    cats_used: dict = merchant.get("categories_used", {}) or {}
+    # Build {category_id: category_object} for quick lookups, excluding
+    # hidden/deleted.
+    by_id = {
+        c.id: c
+        for c in ynab_categories
+        if not getattr(c, "hidden", False) and not getattr(c, "deleted", False)
+    }
+    # Sort used categories by frequency descending.
+    used_sorted = sorted(
+        [(cid, cnt) for cid, cnt in cats_used.items() if cid in by_id],
+        key=lambda kv: (-kv[1], by_id[kv[0]].name.lower()),
+    )
+
+    while True:
+        print()
+        print(f"  {_bold('Categories for')} '{merchant.get('alias', '?')}':")
+        for i, (cid, cnt) in enumerate(used_sorted, start=1):
+            c = by_id[cid]
+            print(f"   {i}. {c.name} {_dim(f'(used {cnt}x)')}")
+        print()
+        print(f"   {_dim('o)')} Other category")
+        print(f"   {_dim('n)')} New category")
+        print(f"   {_dim('b)')} Back")
+        print()
+
+        raw = input(_cyan("  Pick: ")).strip().lower()
+
+        if not raw:
+            continue
+        if raw == "b":
+            return None
+        if raw == "o":
+            picked = _pick_category_from_full_list(category_groups)
+            if picked:
+                return picked
+            continue
+        if raw == "n":
+            picked = _create_new_category(category_groups, ynab_client, budget_id)
+            if picked:
+                return picked
+            continue
+        if raw.isdigit():
+            n = int(raw)
+            if 1 <= n <= len(used_sorted):
+                return used_sorted[n - 1][0]
+            print(f"  Out of range (1..{len(used_sorted)})")
+            continue
+        print(f"  Unrecognized: {raw!r}")
+
+
+def _pick_category_from_full_list(category_groups: list) -> Optional[str]:
+    """Stub: filled in Task 7b. Returns None for now."""
+    print(_dim("  (Other-category picker not implemented yet)"))
+    return None
+
+
+def _create_new_category(
+    category_groups: list, ynab_client: YNABClient, budget_id: str
+) -> Optional[str]:
+    """Stub: filled in Task 8. Returns None for now."""
+    print(_dim("  (New-category flow not implemented yet)"))
+    return None
 
 
 class _PendingQueue:

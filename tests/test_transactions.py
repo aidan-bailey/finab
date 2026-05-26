@@ -174,5 +174,44 @@ class TestMergeAndFilter(unittest.TestCase):
         self.assertEqual(result[0].ynab_id, "yn-tx-1")
 
 
+from unittest.mock import patch
+from finab.transactions import _pick_category
+
+
+class TestPickCategory(unittest.TestCase):
+    def _category(self, cid, name, hidden=False, deleted=False):
+        # MagicMock(name=...) is reserved; assign .name explicitly.
+        c = MagicMock(id=cid, hidden=hidden, deleted=deleted)
+        c.name = name
+        return c
+
+    def test_pick_from_used_by_number(self):
+        merchant = {"alias": "Spar", "categories_used": {"c-groceries": 47, "c-snacks": 3}}
+        categories = [
+            self._category("c-groceries", "Groceries"),
+            self._category("c-snacks", "Snacks"),
+        ]
+        with patch("builtins.input", return_value="1"):
+            result = _pick_category(merchant, categories, [], MagicMock(), "bid")
+        # 47x is most-used, sorts first
+        self.assertEqual(result, "c-groceries")
+
+    def test_returns_none_when_back(self):
+        merchant = {"alias": "Spar", "categories_used": {"c-groceries": 1}}
+        categories = [self._category("c-groceries", "Groceries")]
+        with patch("builtins.input", return_value="b"):
+            result = _pick_category(merchant, categories, [], MagicMock(), "bid")
+        self.assertIsNone(result)
+
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    def test_out_of_range_reprompts(self, _stdout):
+        merchant = {"alias": "Spar", "categories_used": {"c-groceries": 1}}
+        categories = [self._category("c-groceries", "Groceries")]
+        # 99 is out of range; reprompt; then 1 picks the only used category.
+        with patch("builtins.input", side_effect=["99", "1"]):
+            result = _pick_category(merchant, categories, [], MagicMock(), "bid")
+        self.assertEqual(result, "c-groceries")
+
+
 if __name__ == "__main__":
     unittest.main()
