@@ -380,6 +380,60 @@ class TestCollectSplits(unittest.TestCase):
         self.assertIsNone(result)
 
 
+from finab.transactions import _can_repeat, _apply_repeat
+
+
+class TestRepeatHelpers(unittest.TestCase):
+    def test_can_repeat_when_exact_amount_match(self):
+        merchant = {"last_processing": {"amount_milliunits": -1000, "splits": []}}
+        txn = MagicMock(amount=-1000)
+        self.assertTrue(_can_repeat(merchant, txn))
+
+    def test_can_not_repeat_when_amount_differs(self):
+        merchant = {"last_processing": {"amount_milliunits": -1000, "splits": []}}
+        txn = MagicMock(amount=-2000)
+        self.assertFalse(_can_repeat(merchant, txn))
+
+    def test_can_not_repeat_when_no_last_processing(self):
+        self.assertFalse(_can_repeat({}, MagicMock(amount=-1000)))
+
+    def test_apply_repeat_single_category(self):
+        lp = {
+            "amount_milliunits": -1000,
+            "parent_memo": "",
+            "splits": [
+                {"category_id": "cat-A", "amount_milliunits": -1000, "memo": ""}
+            ],
+        }
+        merchant = {"last_processing": lp}
+        txn = MagicMock(amount=-1000, memo="finwise desc")
+        txn.subtransactions = []
+        _apply_repeat(merchant, txn)
+        self.assertEqual(txn.category_id, "cat-A")
+        self.assertEqual(txn.subtransactions, [])
+        # Memo stays as the FinWise description (default), per spec.
+        self.assertEqual(txn.memo, "finwise desc")
+
+    def test_apply_repeat_split(self):
+        lp = {
+            "amount_milliunits": -1000,
+            "parent_memo": "",
+            "splits": [
+                {"category_id": "cat-A", "amount_milliunits": -600, "memo": ""},
+                {"category_id": "cat-B", "amount_milliunits": -400, "memo": ""},
+            ],
+        }
+        merchant = {"last_processing": lp}
+        txn = MagicMock(amount=-1000, memo="finwise desc")
+        txn.subtransactions = []
+        _apply_repeat(merchant, txn)
+        self.assertIsNone(txn.category_id)
+        self.assertEqual(len(txn.subtransactions), 2)
+        self.assertEqual(txn.subtransactions[0]["category_id"], "cat-A")
+        self.assertEqual(txn.subtransactions[0]["amount"], -600)
+        self.assertEqual(txn.subtransactions[1]["amount"], -400)
+
+
 from finab.transactions import _update_merchant_memory
 
 

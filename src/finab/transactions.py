@@ -395,6 +395,39 @@ class _PendingQueue:
             return False
 
 
+def _can_repeat(merchant: dict, txn) -> bool:
+    """True iff the merchant has a last_processing whose amount equals
+    txn.amount exactly. (Enter-repeat fires only on exact-amount match.)"""
+    lp = merchant.get("last_processing") if merchant else None
+    if not lp:
+        return False
+    return lp.get("amount_milliunits") == getattr(txn, "amount", None)
+
+
+def _apply_repeat(merchant: dict, txn) -> None:
+    """Replay merchant.last_processing onto txn. Single-category cases set
+    txn.category_id; multi-split cases set txn.subtransactions. Memos use
+    fresh defaults (FinWise description for parent, empty for splits) so
+    the user doesn't inherit stale per-transaction notes."""
+    lp = merchant["last_processing"]
+    splits = lp.get("splits", []) or []
+    if len(splits) == 1:
+        txn.category_id = splits[0]["category_id"]
+        txn.subtransactions = []
+    else:
+        txn.category_id = None
+        txn.subtransactions = [
+            {
+                "category_id": s["category_id"],
+                "amount": s["amount_milliunits"],
+                "memo": "",  # fresh default per spec
+            }
+            for s in splits
+        ]
+    # Parent memo: keep whatever txn.memo already is (it's the FinWise
+    # description by default after Transaction.from_finwise).
+
+
 def _update_merchant_memory(store: ConfigStore, merchant: dict, txn) -> None:
     """Update the merchant's categories_used (frequency map) and
     last_processing (split structure for Enter-repeat) based on the just-
