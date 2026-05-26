@@ -51,6 +51,55 @@ def _find_inflow_category(categories) -> Optional[str]:
     return None
 
 
+def merge_and_filter_transactions(fw_transactions, ynab_transactions, store: ConfigStore) -> list:
+    """Map FinWise accounts to YNAB account ids via the store, dedup against
+    existing YNAB transactions by hashed import_id, and skip ones already
+    categorized in YNAB. Returns the list of FinWise transactions needing
+    processing. Each returned transaction has:
+      - account_id rewritten to the YNAB account id
+      - import_id rewritten to the hashed form
+      - ynab_id set if a matching uncategorized YNAB transaction was found
+        (so the caller knows to PATCH instead of POST)
+    """
+    from finab.main import generate_import_id  # local import to avoid cycle
+    from finab.config import load_import_id_offset
+
+    offset = load_import_id_offset()
+
+    ynab_by_import_id = {}
+    for txn in ynab_transactions:
+        if getattr(txn, "import_id", None):
+            ynab_by_import_id[txn.import_id] = txn
+
+    out = []
+    matched_ynab_ids = set()
+    for fw_txn in fw_transactions:
+        acc = store.account_by_finwise_id(fw_txn.account_id)
+        if not acc:
+            continue
+        ynab_account_id = acc["ynab"].get("id")
+        if not ynab_account_id:
+            continue
+
+        hashed_id = generate_import_id(fw_txn.import_id, offset)
+        fw_txn.import_id = hashed_id
+
+        ynab_match = ynab_by_import_id.get(hashed_id)
+        if ynab_match and ynab_match.id not in matched_ynab_ids:
+            matched_ynab_ids.add(ynab_match.id)
+            if getattr(ynab_match, "deleted", False):
+                continue
+            if ynab_match.category_id:
+                # Already categorized — preserve user's manual YNAB work.
+                continue
+            fw_txn.ynab_id = ynab_match.id
+            fw_txn.category_id = None
+
+        fw_txn.account_id = ynab_account_id
+        out.append(fw_txn)
+    return out
+
+
 class _PendingQueue:
     """Holds categorized-but-not-yet-pushed transactions. Flushed on demand
     via the `f` command, at end of run, or after Ctrl+C confirmation."""
