@@ -151,6 +151,10 @@ def _extract_distinct_merchants(fw_transactions) -> list[dict]:
     Captures a few sample transactions per merchant so the user has enough
     context to recognize the merchant when prompted (merchant_name is often
     null on the FinWise side).
+
+    Operates on the unified `Transaction` model: amount is an int in
+    milliunits (1000 = 1.00), date is a `date`, and the human-readable
+    description lives in `memo` (with `original_description` as fallback).
     """
     seen: dict[str, dict] = {}
     samples: dict[str, list[dict]] = {}
@@ -159,22 +163,27 @@ def _extract_distinct_merchants(fw_transactions) -> list[dict]:
         if not mid:
             continue
 
+        memo = getattr(t, "memo", None)
+        orig = getattr(t, "original_description", None)
+        description = memo or orig or getattr(t, "payee_name", None)
+
         sample = {
-            "description": getattr(t, "description", None),
+            "description": description,
+            "original_description": orig if orig and orig != memo else None,
             "amount": None,
             "date": None,
         }
         amt = getattr(t, "amount", None)
         if amt is not None:
-            inner = getattr(amt, "amount", amt)
             try:
-                sample["amount"] = float(inner)
+                # Transaction.amount is int milliunits — convert to whole currency
+                sample["amount"] = int(amt) / 1000.0
             except (TypeError, ValueError):
                 pass
         d = getattr(t, "date", None)
         if d is not None:
             try:
-                sample["date"] = d.date().isoformat() if hasattr(d, "date") else d.isoformat()
+                sample["date"] = d.isoformat() if hasattr(d, "isoformat") else str(d)
             except (AttributeError, TypeError):
                 sample["date"] = str(d)
 
@@ -333,6 +342,9 @@ def sync_merchants(
             date_str = s.get("date") or "?"
             desc = s.get("description") or "(no description)"
             print(f"  Sample:         {date_str}  {amount_str:>10}  {desc}")
+            orig = s.get("original_description")
+            if orig:
+                print(f"  (original):                          {orig}")
 
         alias = _prompt_alias_required(
             "Enter YNAB payee name",
