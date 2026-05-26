@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -55,3 +56,22 @@ class ConfigStore:
 
     def merchants(self) -> Iterable[dict]:
         return self._data["merchants"].values()
+
+    def add_account(self, alias: str, fw_record: dict, ynab_record: dict) -> dict:
+        internal_id = str(uuid.uuid4())
+        account = {
+            "id": internal_id,
+            "alias": alias,
+            "finwise": dict(fw_record),
+            "ynab": dict(ynab_record),
+        }
+        self._data["accounts"][internal_id] = account
+        self._rebuild_indexes()
+        self._save()
+        return account
+
+    def account_by_finwise_id(self, fw_id: str) -> Optional[dict]:
+        internal_id = self._fw_account_index.get(fw_id)
+        if not internal_id:
+            return None
+        return self._data["accounts"][internal_id]
