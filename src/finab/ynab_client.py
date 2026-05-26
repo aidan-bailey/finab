@@ -20,6 +20,10 @@ from ynab import (
     SaveSubTransaction,
     PostPayee,
     PostPayeeWrapper,
+    NewCategory,
+    SaveCategoryGroup,
+    PostCategoryWrapper,
+    PostCategoryGroupWrapper,
 )
 
 from finab.models import YNABTransaction, Transaction, Account
@@ -188,6 +192,24 @@ class YNABClient:
         wrapper = PostPayeeWrapper(payee=PostPayee(name=name))
         response = payees_api.create_payee(budget_id, wrapper)
         return response.data.payee
+
+    def create_category_group(self, budget_id: str, name: str) -> Any:
+        """Create a new category group. Returns the created CategoryGroup."""
+        categories_api = CategoriesApi(self.api_client)
+        wrapper = PostCategoryGroupWrapper(category_group=SaveCategoryGroup(name=name))
+        response = categories_api.create_category_group(budget_id, wrapper)
+        return response.data.category_group
+
+    def create_category(
+        self, budget_id: str, name: str, category_group_id: str
+    ) -> Any:
+        """Create a new category in the given group. Returns the created Category."""
+        categories_api = CategoriesApi(self.api_client)
+        wrapper = PostCategoryWrapper(
+            category=NewCategory(name=name, category_group_id=category_group_id)
+        )
+        response = categories_api.create_category(budget_id, wrapper)
+        return response.data.category
 
     def create_transactions(
         self,
