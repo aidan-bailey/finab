@@ -22,6 +22,7 @@ from finab.config import (
     save_cache,
     clear_cache,
 )
+from finab.store import ConfigStore, to_dict
 import random
 import string
 import hashlib
@@ -88,21 +89,41 @@ def generate_import_id(original_id: str, offset: str) -> str:
     return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:36]
 
 
+def _calculate_starting_balance(fw_acc, fw_client) -> int:
+    """Reproduce today's balance-adjustment math: starting_balance =
+    current_balance - sum(transactions since start of month)."""
+    start_date = date.today().replace(day=1)
+    try:
+        txns = fw_client.get_transactions(start_date=start_date)
+    except Exception:
+        return fw_acc.balance
+    account_txns = [t for t in txns if t.account_id == fw_acc.id]
+    adjustment = sum(t.amount for t in account_txns)
+    return int(fw_acc.balance - adjustment)
+
+
+def _account_with_overrides(fw_acc, name: str, balance: int):
+    """Return a shallow copy of fw_acc with name and balance overridden,
+    suitable to pass to ynab_client.create_account."""
+    import copy
+    copy_acc = copy.copy(fw_acc)
+    copy_acc.name = name
+    copy_acc.balance = balance
+    return copy_acc
+
+
 def sync_accounts(
-    finwise_client: FinWiseClient,
+    fw_client: FinWiseClient,
     ynab_client: YNABClient,
     budget_id: str,
+    store: ConfigStore,
 ):
+    """Phase 1: ensure every FinWise account has a matching entity in the store
+    and a corresponding YNAB account, creating new YNAB accounts when needed."""
     print("\n--- Account Sync ---")
 
-    # Pre-calculate start_date for transaction fetching (used for balance adjustment)
-    # Default to 1st of current month
-    start_date = date.today().replace(day=1)
-
-    print("Fetching accounts...")
-
     try:
-        fw_accounts = finwise_client.get_accounts()
+        fw_accounts = fw_client.get_accounts()
         print(f"FinWise Accounts: {len(fw_accounts)}")
     except Exception as e:
         print(f"Failed to fetch FinWise accounts: {e}")
@@ -115,108 +136,46 @@ def sync_accounts(
         print(f"Failed to fetch YNAB accounts: {e}")
         return
 
-    # Fetch FinWise transactions for the period to adjust starting balances for new accounts
-    print("Fetching transactions for balance adjustment...")
-    fw_transactions_for_adj = []
-    try:
-        fw_transactions_for_adj = finwise_client.get_transactions(start_date=start_date)
-    except Exception as e:
-        print(f"Failed to fetch transactions for adjustment: {e}")
-        return
+    store.refresh_records(fw_accounts=fw_accounts, ynab_accounts=ynab_accounts)
 
-    ynab_account_names = {acc.name for acc in ynab_accounts}
-    # Create a map for ID lookup for starting balance creation
-    ynab_map_name_to_id = {acc.name: acc.ynab_id for acc in ynab_accounts}
-
-    account_aliases = load_aliases()
-    aliases_modified = False
+    ynab_by_name = {_normalize_alias(a.name): a for a in ynab_accounts}
 
     for fw_acc in fw_accounts:
-        # Determine the name to check against YNAB
-        target_name = account_aliases.get(fw_acc.name, fw_acc.name)
+        if store.account_by_finwise_id(fw_acc.id):
+            continue
 
-        if target_name not in ynab_account_names:
-            # Check if this name came from an explicit alias configuration
-            if fw_acc.name in account_aliases:
-                print(
-                    f"\nAccount '{fw_acc.name}' mapped to '{target_name}' in config, but not found in YNAB."
-                )
-                final_name = target_name
-            else:
-                print(f"\nAccount '{fw_acc.name}' not found in YNAB.")
-                user_input = input(
-                    f"Enter YNAB account name for '{fw_acc.name}' (default: '{fw_acc.name}'): "
-                ).strip()
+        alias = _prompt_alias_required(
+            f"Enter YNAB account name for FinWise account '{fw_acc.name}'",
+            default=fw_acc.name,
+        )
 
-                final_name = user_input if user_input else fw_acc.name
-
-                # Ensure we save the alias even if it's the same, so we don't ask again next time if logic changes
-                # But wait, current logic only asks if "target_name not in ynab_account_names".
-                # If target_name IS found, we don't ask.
-                # account_aliases.get(fw_acc.name, fw_acc.name) returns name if not in alias.
-                # So if we want to explicitly store "My Bank" -> "My Bank" in config.json:
-
-                account_aliases[fw_acc.name] = final_name
-                aliases_modified = True
-                if final_name != fw_acc.name:
-                    print(f"Alias saved: '{fw_acc.name}' -> '{final_name}'")
-                else:
-                    print(
-                        f"Alias saved: '{fw_acc.name}' -> '{final_name}' (Same as original)"
-                    )
-
-            if final_name in ynab_account_names:
-                print(
-                    f"Mapped '{fw_acc.name}' to existing YNAB account '{final_name}'."
-                )
-                target_name = final_name
-            else:
-                print(f"Creating account '{final_name}' in YNAB...")
-                try:
-                    adjustment = 0
-                    account_txns = []
-                    if fw_acc.finwise_id:
-                        account_txns = [
-                            t
-                            for t in fw_transactions_for_adj
-                            if t.account_id == fw_acc.finwise_id
-                        ]
-                        adjustment = sum(t.amount for t in account_txns)
-
-                    original_balance = fw_acc.balance
-                    calculated_starting_balance = original_balance - adjustment
-
-                    print(f"  Current Balance: {original_balance / 1000:.2f}")
-                    print(f"  Transactions since {start_date}: {len(account_txns)}")
-                    print(f"  Adjustment: {adjustment / 1000:.2f}")
-                    print(
-                        f"  Calculated Starting Balance: {calculated_starting_balance / 1000:.2f}"
-                    )
-
-                    fw_acc.name = final_name
-                    fw_acc.balance = int(calculated_starting_balance)
-                    ynab_client.create_account(budget_id, fw_acc)
-                    fw_acc.balance = original_balance
-
-                    print(f"Account '{final_name}' created successfully.")
-                    ynab_account_names.add(final_name)
-                    # Refresh our ID map if possible, but YNAB creates SB txn automatically here.
-                    continue  # Skip reset logic for brand new accounts
-                except Exception as e:
-                    print(f"Failed to create account '{final_name}': {e}")
-                    continue
-        else:
-            print(
-                f"Account '{fw_acc.name}' (mapped as '{target_name}') already exists in YNAB."
+        match = ynab_by_name.get(_normalize_alias(alias))
+        if match:
+            store.add_account(
+                alias=alias,
+                fw_record=to_dict(fw_acc),
+                ynab_record=to_dict(match),
             )
-            # Ensure mapping is saved even if implicit (same name) or if it exists in YNAB but not in config
-            if fw_acc.name not in account_aliases:
-                account_aliases[fw_acc.name] = target_name
-                aliases_modified = True
-                print(f"Implicit alias saved: '{fw_acc.name}' -> '{target_name}'")
+            print(f"Linked '{fw_acc.name}' -> existing YNAB account '{match.name}'")
+            continue
 
-    if aliases_modified:
-        save_aliases(account_aliases)
+        # Create on YNAB side
+        try:
+            starting_balance = _calculate_starting_balance(fw_acc, fw_client)
+            fw_acc_for_create = _account_with_overrides(
+                fw_acc, name=alias, balance=starting_balance
+            )
+            response = ynab_client.create_account(budget_id, fw_acc_for_create)
+            new_record = response.data.account
+            store.add_account(
+                alias=alias,
+                fw_record=to_dict(fw_acc),
+                ynab_record=to_dict(new_record),
+            )
+            print(f"Created YNAB account '{alias}'")
+        except Exception as e:
+            print(f"Failed to create YNAB account '{alias}': {e}")
+            continue
 
 
 def map_accounts(
