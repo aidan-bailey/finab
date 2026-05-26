@@ -97,7 +97,7 @@ def _calculate_starting_balance(fw_acc, fw_client) -> int:
         txns = fw_client.get_transactions(start_date=start_date)
     except Exception:
         return fw_acc.balance
-    account_txns = [t for t in txns if t.account_id == fw_acc.id]
+    account_txns = [t for t in txns if t.account_id == fw_acc.finwise_id]
     adjustment = sum(t.amount for t in account_txns)
     return int(fw_acc.balance - adjustment)
 
@@ -175,7 +175,7 @@ def sync_accounts(
     ynab_by_name = {_normalize_alias(a.name): a for a in ynab_accounts}
 
     for fw_acc in fw_accounts:
-        if store.account_by_finwise_id(fw_acc.id):
+        if store.account_by_finwise_id(fw_acc.finwise_id):
             continue
 
         alias = _prompt_alias_required(
@@ -185,11 +185,21 @@ def sync_accounts(
 
         match = ynab_by_name.get(_normalize_alias(alias))
         if match:
-            store.add_account(
-                alias=alias,
-                fw_record=to_dict(fw_acc),
-                ynab_record=to_dict(match),
-            )
+            fw_record = {
+                "id": fw_acc.finwise_id,
+                "name": fw_acc.name,
+                "type": fw_acc.type,
+                "balance": fw_acc.balance,
+                "currency_code": fw_acc.currency_code,
+            }
+            ynab_record = {
+                "id": match.ynab_id,
+                "name": match.name,
+                "type": match.type,
+                "balance": match.balance,
+                "transfer_payee_id": match.transfer_payee_id,
+            }
+            store.add_account(alias=alias, fw_record=fw_record, ynab_record=ynab_record)
             print(f"Linked '{fw_acc.name}' -> existing YNAB account '{match.name}'")
             continue
 
@@ -201,9 +211,16 @@ def sync_accounts(
             )
             response = ynab_client.create_account(budget_id, fw_acc_for_create)
             new_record = response.data.account
+            fw_record = {
+                "id": fw_acc.finwise_id,
+                "name": fw_acc.name,
+                "type": fw_acc.type,
+                "balance": fw_acc.balance,
+                "currency_code": fw_acc.currency_code,
+            }
             store.add_account(
                 alias=alias,
-                fw_record=to_dict(fw_acc),
+                fw_record=fw_record,
                 ynab_record=to_dict(new_record),
             )
             print(f"Created YNAB account '{alias}'")

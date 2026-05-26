@@ -20,10 +20,12 @@ class TestSyncAccounts(unittest.TestCase):
 
     def _fw_account(self, id, name, type="depository", balance=100000):
         a = MagicMock()
-        a.id = id
+        a.finwise_id = id  # The internal Account model uses finwise_id
+        a.id = id  # Keep for any code that still uses .id during transition
         a.name = name
         a.type = type
         a.balance = balance
+        a.currency_code = "ZAR"
         record = {"id": id, "name": name, "type": type, "balance": balance}
         a.dict.return_value = record
         a.model_dump.return_value = record
@@ -35,6 +37,9 @@ class TestSyncAccounts(unittest.TestCase):
         a.id = id
         a.ynab_id = id
         a.name = name
+        a.type = "checking"
+        a.balance = 0
+        a.transfer_payee_id = None
         record = {"id": id, "name": name}
         a.to_dict.return_value = record
         a.model_dump.return_value = record
@@ -91,3 +96,23 @@ class TestSyncAccounts(unittest.TestCase):
         linked = self.store.account_by_finwise_id("fw-1")
         self.assertIsNotNone(linked)
         self.assertEqual(linked["alias"], "Brand New Account")
+
+    def test_persisted_finwise_id_in_store_matches_what_lookup_expects(self):
+        """Regression: ensure that after add_account, the store's
+        account_by_finwise_id can find the account via its FinWise id.
+        Previously the bug caused fw_record to be serialized with key
+        'finwise_id' instead of 'id', breaking the index which expects fw['id']."""
+        self.fw_client.get_accounts.return_value = [self._fw_account("fw-7", "Test")]
+        self.ynab_client.get_accounts.return_value = []
+        self.fw_client.get_transactions.return_value = []
+        created = self._ynab_account("yn-7", "Test")
+        self.ynab_client.create_account.return_value = MagicMock(data=MagicMock(account=created))
+
+        from finab.main import sync_accounts
+        with patch("finab.main.input", create=True, return_value="Test"):
+            sync_accounts(self.fw_client, self.ynab_client, "bid", self.store)
+
+        found = self.store.account_by_finwise_id("fw-7")
+        self.assertIsNotNone(found, "account_by_finwise_id must work after sync_accounts")
+        self.assertEqual(found["finwise"]["id"], "fw-7")
+        self.assertEqual(found["ynab"]["id"], "yn-7")
