@@ -1351,7 +1351,7 @@ def main():
 
         # Verify stored budget_id is valid
         if budget_id:
-            found_budget = next((b for b in budgets if b.id == budget_id), None)
+            found_budget = next((b for b in budgets if str(b.id) == budget_id), None)
             if found_budget:
                 print(f"Using stored budget: {found_budget.name}")
             else:
@@ -1362,7 +1362,7 @@ def main():
 
         if not budget_id:
             if len(budgets) == 1:
-                budget_id = budgets[0].id
+                budget_id = str(budgets[0].id)
                 print(f"Using budget: {budgets[0].name}")
             else:
                 print("\nMultiple budgets found. Please select one:")
@@ -1374,7 +1374,7 @@ def main():
                         selection = input("\nEnter the number of the budget to use: ")
                         index = int(selection) - 1
                         if 0 <= index < len(budgets):
-                            budget_id = budgets[index].id
+                            budget_id = str(budgets[index].id)
                             print(f"Selected budget: {budgets[index].name}")
                             break
                         else:

@@ -21,7 +21,7 @@ def _load_data() -> Dict[str, Any]:
 def _save_data(data: Dict[str, Any]) -> None:
     """Helper to save all data to config.json."""
     with open(CONFIG_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+        json.dump(data, f, indent=4, default=str)
 
 
 def load_aliases(store: Optional[ConfigStore] = None) -> Dict[str, str]:
