@@ -81,6 +81,34 @@ class TestSyncAccounts(unittest.TestCase):
         self.assertEqual(linked["alias"], "My Checking")
         self.assertEqual(linked["ynab"]["id"], "yn-1")
 
+    @patch("finab.main.input", create=True, return_value="Whatever")
+    def test_reconcile_recreates_account_missing_from_ynab(self, _input):
+        """A store account whose YNAB id is no longer present in YNAB gets
+        recreated on the YNAB side."""
+        # Seed the store with an account pointing at a no-longer-existing yn id
+        self.store.add_account(
+            alias="Gone",
+            fw_record={"id": "fw-gone", "name": "Gone", "type": "checking", "balance": 5000},
+            ynab_record={"id": "yn-OLD", "name": "Gone", "type": "checking", "balance": 5000},
+        )
+        self.store = ConfigStore(self.config_path)
+
+        # YNAB only has unrelated accounts now
+        self.fw_client.get_accounts.return_value = []
+        self.ynab_client.get_accounts.return_value = [self._ynab_account("yn-other", "Other")]
+        self.fw_client.get_transactions.return_value = []
+        # The create_account mock returns a fresh account record
+        new_acc = self._ynab_account("yn-NEW", "Gone")
+        self.ynab_client.create_account.return_value = MagicMock(data=MagicMock(account=new_acc))
+
+        from finab.main import sync_accounts
+        sync_accounts(self.fw_client, self.ynab_client, "bid", self.store)
+
+        self.ynab_client.create_account.assert_called_once()
+        updated = self.store.account_by_finwise_id("fw-gone")
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated["ynab"]["id"], "yn-NEW")
+
     @patch("finab.main.input", create=True, return_value="Brand New Account")
     def test_creates_ynab_account_when_no_match(self, _input):
         self.fw_client.get_accounts.return_value = [self._fw_account("fw-1", "Checking")]

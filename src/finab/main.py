@@ -325,6 +325,100 @@ def _account_with_overrides(fw_acc, name: str, balance: int):
     return copy_acc
 
 
+def _reconcile_store_accounts_to_ynab(
+    store: ConfigStore,
+    ynab_accounts,
+    ynab_client: YNABClient,
+    budget_id: str,
+) -> int:
+    """For each account entry in the store, ensure its YNAB-side counterpart
+    exists in YNAB. Create on YNAB and update the store entry if missing.
+    Returns the number of accounts created on the YNAB side."""
+    existing_ids = {
+        str(getattr(a, "ynab_id", None) or getattr(a, "id", ""))
+        for a in ynab_accounts
+        if (getattr(a, "ynab_id", None) or getattr(a, "id", None))
+    }
+    created = 0
+    for entry in list(store.accounts()):
+        yn = entry.get("ynab", {})
+        yn_id = yn.get("id")
+        if yn_id and str(yn_id) in existing_ids:
+            continue
+
+        # Need to create on YNAB. Derive name/type/balance from what we have.
+        name = entry.get("alias") or yn.get("name")
+        if not name:
+            print(f"  Skipping account {entry.get('id')!r}: no alias/name to push")
+            continue
+        fw = entry.get("finwise", {}) or {}
+        acc_type = yn.get("type") or fw.get("type") or "checking"
+        balance = yn.get("balance")
+        if balance is None:
+            balance = fw.get("balance", 0)
+        currency = fw.get("currency_code", "")
+
+        try:
+            from finab.models import Account
+            payload = Account(
+                name=name,
+                type=acc_type,
+                balance=int(balance) if balance is not None else 0,
+                currency_code=currency,
+            )
+            response = ynab_client.create_account(budget_id, payload)
+            new_record = response.data.account
+            store.set_account_ynab_record(
+                entry["id"],
+                {
+                    "id": str(getattr(new_record, "id", "")),
+                    "name": getattr(new_record, "name", name),
+                    "type": getattr(new_record, "type", acc_type),
+                    "balance": getattr(new_record, "balance", balance),
+                    "transfer_payee_id": (
+                        str(new_record.transfer_payee_id)
+                        if getattr(new_record, "transfer_payee_id", None) is not None
+                        else None
+                    ),
+                },
+            )
+            print(f"  Recreated YNAB account '{name}'")
+            created += 1
+        except Exception as e:
+            print(f"  Failed to create YNAB account '{name}': {e}")
+    return created
+
+
+def _reconcile_store_merchants_to_ynab(
+    store: ConfigStore,
+    ynab_payees,
+    ynab_client: YNABClient,
+    budget_id: str,
+) -> int:
+    """For each merchant entry in the store, ensure its YNAB payee exists in
+    YNAB. Create and update the store entry if missing. Returns count."""
+    existing_ids = {str(p.id) for p in ynab_payees if getattr(p, "id", None) is not None}
+    created = 0
+    for entry in list(store.merchants()):
+        yn = entry.get("ynab", {})
+        yn_id = yn.get("id")
+        if yn_id and str(yn_id) in existing_ids:
+            continue
+
+        name = entry.get("alias") or yn.get("name")
+        if not name:
+            print(f"  Skipping merchant {entry.get('id')!r}: no alias/name to push")
+            continue
+        try:
+            new_payee = ynab_client.create_payee(budget_id, name)
+            store.set_merchant_ynab_record(entry["id"], to_dict(new_payee))
+            print(f"  Recreated YNAB payee '{name}'")
+            created += 1
+        except Exception as e:
+            print(f"  Failed to create YNAB payee '{name}': {e}")
+    return created
+
+
 def sync_accounts(
     fw_client: FinWiseClient,
     ynab_client: YNABClient,
@@ -350,6 +444,18 @@ def sync_accounts(
         return
 
     store.refresh_records(fw_accounts=fw_accounts, ynab_accounts=ynab_accounts)
+
+    # Reconcile: push any store accounts that lack a valid YNAB-side record
+    # into YNAB. After this, every store account has a live YNAB counterpart.
+    pushed = _reconcile_store_accounts_to_ynab(
+        store, ynab_accounts, ynab_client, budget_id
+    )
+    if pushed:
+        # Refetch so subsequent name-matching sees the newly created accounts.
+        try:
+            ynab_accounts = ynab_client.get_accounts(budget_id)
+        except Exception as e:
+            print(f"Warning: failed to refetch YNAB accounts after reconcile: {e}")
 
     ynab_by_name = {normalize_alias(a.name): a for a in ynab_accounts}
 
@@ -434,6 +540,17 @@ def sync_merchants(
         return
 
     store.refresh_records(ynab_payees=ynab_payees)
+
+    # Reconcile: push any store merchants whose YNAB payee no longer exists
+    # (or whose ynab record is empty) into YNAB.
+    pushed = _reconcile_store_merchants_to_ynab(
+        store, ynab_payees, ynab_client, budget_id
+    )
+    if pushed:
+        try:
+            ynab_payees = ynab_client.get_payees(budget_id)
+        except Exception as e:
+            print(f"Warning: failed to refetch YNAB payees after reconcile: {e}")
 
     fw_merchants = _extract_distinct_merchants(fw_transactions)
     unknown = [m for m in fw_merchants if not store.merchant_by_finwise_id(m["id"])]

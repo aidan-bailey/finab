@@ -139,6 +139,21 @@ class ConfigStore:
             return None
         return self._data["merchants"][internal_id]
 
+    def set_account_ynab_record(self, account_id: str, ynab_record: dict) -> None:
+        """Replace an account entry's YNAB sub-record (used by the reconcile
+        step when a YNAB account is created/recreated to match the store)."""
+        acc = self._data["accounts"][account_id]
+        acc["ynab"] = dict(ynab_record)
+        self._rebuild_indexes()
+        self._save()
+
+    def set_merchant_ynab_record(self, merchant_id: str, ynab_record: dict) -> None:
+        """Replace a merchant entry's YNAB sub-record."""
+        m = self._data["merchants"][merchant_id]
+        m["ynab"] = dict(ynab_record)
+        self._rebuild_indexes()
+        self._save()
+
     def refresh_records(
         self,
         fw_accounts=None,

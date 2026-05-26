@@ -56,6 +56,31 @@ class TestSyncMerchants(unittest.TestCase):
         p.model_dump.return_value = {"id": id, "name": name}
         return p
 
+    @patch("finab.main.input", create=True, return_value="Whatever")
+    def test_reconcile_recreates_merchant_payee_missing_from_ynab(self, _input):
+        """A store merchant whose YNAB payee id is no longer in YNAB gets
+        a fresh payee created and the store updated."""
+        self.store.add_merchant(
+            alias="Lost Merchant",
+            fw_record={"id": "fw-lost", "name": "Lost"},
+            ynab_record={"id": "yn-OLD", "name": "Lost Merchant"},
+        )
+        self.store = ConfigStore(self.config_path)
+
+        # No transactions, and YNAB doesn't have yn-OLD anymore
+        self.fw_client.get_transactions.return_value = []
+        self.ynab_client.get_payees.return_value = []
+        new_payee = self._ynab_payee("yn-NEW", "Lost Merchant")
+        self.ynab_client.create_payee.return_value = new_payee
+
+        from finab.main import sync_merchants
+        sync_merchants(self.fw_client, self.ynab_client, "bid", self.store)
+
+        self.ynab_client.create_payee.assert_called_once_with("bid", "Lost Merchant")
+        updated = self.store.merchant_by_finwise_id("fw-lost")
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated["ynab"]["id"], "yn-NEW")
+
     @patch("finab.main.input", create=True, return_value="Discovery Bank ZAR")
     def test_links_to_transfer_payee_when_alias_matches_own_account(self, _input):
         # Account in the store with a known transfer_payee_id
