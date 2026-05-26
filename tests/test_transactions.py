@@ -1,7 +1,12 @@
 import unittest
 from unittest.mock import MagicMock
 
-from finab.transactions import _PendingQueue
+from finab.transactions import (
+    _PendingQueue,
+    _is_inflow,
+    _is_transfer,
+    _find_inflow_category,
+)
 
 
 class TestPendingQueue(unittest.TestCase):
@@ -47,6 +52,40 @@ class TestPendingQueue(unittest.TestCase):
         ok = q.flush(client, "bid")
         self.assertFalse(ok)
         self.assertEqual(q.count(), 1)
+
+
+class TestAutoPathHelpers(unittest.TestCase):
+    def test_is_inflow_positive(self):
+        self.assertTrue(_is_inflow(MagicMock(amount=1000)))
+        self.assertFalse(_is_inflow(MagicMock(amount=-1000)))
+        self.assertFalse(_is_inflow(MagicMock(amount=0)))
+
+    def test_is_transfer_when_merchant_has_transfer_account_id(self):
+        m = {"ynab": {"id": "yn-tp", "transfer_account_id": "yn-acc-1"}}
+        self.assertTrue(_is_transfer(m))
+
+    def test_is_transfer_false_when_missing(self):
+        self.assertFalse(_is_transfer({"ynab": {"id": "yn-p"}}))
+        self.assertFalse(_is_transfer({"ynab": {}}))
+        self.assertFalse(_is_transfer(None))
+
+    def test_find_inflow_category_prefers_ready_to_assign(self):
+        cats = [
+            MagicMock(id="c1", name="Inflow: To be Budgeted", hidden=False, deleted=False),
+            MagicMock(id="c2", name="Inflow: Ready to Assign", hidden=False, deleted=False),
+        ]
+        self.assertEqual(_find_inflow_category(cats), "c2")
+
+    def test_find_inflow_category_skips_hidden_or_deleted(self):
+        cats = [
+            MagicMock(id="c1", name="Inflow: Ready to Assign", hidden=True, deleted=False),
+            MagicMock(id="c2", name="Inflow: Ready to Assign", hidden=False, deleted=True),
+        ]
+        self.assertIsNone(_find_inflow_category(cats))
+
+    def test_find_inflow_category_returns_none_when_absent(self):
+        cats = [MagicMock(id="c1", name="Groceries", hidden=False, deleted=False)]
+        self.assertIsNone(_find_inflow_category(cats))
 
 
 if __name__ == "__main__":

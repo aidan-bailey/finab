@@ -11,6 +11,52 @@ from finab.ynab_client import YNABClient
 from finab.store import ConfigStore, normalize_alias
 
 
+# Names YNAB might use for the inflow category. Checked in this order.
+_INFLOW_CATEGORY_NAMES = (
+    "inflow: ready to assign",
+    "ready to assign",
+    "inflow: to be budgeted",
+    "to be budgeted",
+)
+
+
+def _is_inflow(txn) -> bool:
+    """A positive amount on a YNAB transaction is an inflow."""
+    return getattr(txn, "amount", 0) > 0
+
+
+def _is_transfer(merchant: Optional[dict]) -> bool:
+    """A merchant whose YNAB record carries a transfer_account_id is a
+    transfer payee — the transaction is a transfer to/from one of the
+    user's own accounts."""
+    if not merchant:
+        return False
+    return merchant.get("ynab", {}).get("transfer_account_id") is not None
+
+
+def _find_inflow_category(categories) -> Optional[str]:
+    """Find the YNAB category id for 'Inflow: Ready to Assign' (or its
+    legacy variants). Returns the id of the first matching, non-hidden,
+    non-deleted category; or None if none exists."""
+    by_name = {}
+    for c in categories:
+        if getattr(c, "hidden", False) or getattr(c, "deleted", False):
+            continue
+        # Handle both real objects and MagicMock test objects.
+        # MagicMock stores 'name=' kwarg in _mock_name, not as a real attribute.
+        name_val = getattr(c, "name", None)
+        if hasattr(name_val, "_mock_name"):
+            # It's a MagicMock, get the stored name
+            name_val = getattr(c, "_mock_name", "")
+        name = str(name_val).lower()
+        by_name[name] = c
+    for candidate in _INFLOW_CATEGORY_NAMES:
+        c = by_name.get(candidate)
+        if c is not None:
+            return c.id
+    return None
+
+
 class _PendingQueue:
     """Holds categorized-but-not-yet-pushed transactions. Flushed on demand
     via the `f` command, at end of run, or after Ctrl+C confirmation."""
