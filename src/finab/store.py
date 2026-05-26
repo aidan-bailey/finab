@@ -8,7 +8,7 @@ from typing import Any, Iterable, Optional
 CONFIG_FILE = Path("config.json")
 
 
-def _normalize_alias(alias: str) -> str:
+def normalize_alias(alias: str) -> str:
     return alias.strip().lower()
 
 
@@ -61,7 +61,7 @@ class ConfigStore:
             for fw_id in m.get("finwise", {}):
                 self._fw_merchant_index[fw_id] = m["id"]
             if m.get("alias"):
-                self._alias_merchant_index[_normalize_alias(m["alias"])] = m["id"]
+                self._alias_merchant_index[normalize_alias(m["alias"])] = m["id"]
 
     def accounts(self) -> Iterable[dict]:
         return self._data["accounts"].values()
@@ -115,7 +115,7 @@ class ConfigStore:
         return self._data["merchants"][internal_id]
 
     def merchant_by_alias(self, alias: str) -> Optional[dict]:
-        internal_id = self._alias_merchant_index.get(_normalize_alias(alias))
+        internal_id = self._alias_merchant_index.get(normalize_alias(alias))
         if not internal_id:
             return None
         return self._data["merchants"][internal_id]

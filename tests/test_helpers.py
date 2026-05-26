@@ -2,18 +2,18 @@ import unittest
 from unittest.mock import patch
 from io import StringIO
 
-from finab.main import _normalize_alias, _prompt_alias_required
+from finab.main import normalize_alias, _prompt_alias_required
 
 
 class TestNormalizeAlias(unittest.TestCase):
     def test_lowercases(self):
-        self.assertEqual(_normalize_alias("EASY EQUITIES"), "easy equities")
+        self.assertEqual(normalize_alias("EASY EQUITIES"), "easy equities")
 
     def test_strips_whitespace(self):
-        self.assertEqual(_normalize_alias("  Spar  "), "spar")
+        self.assertEqual(normalize_alias("  Spar  "), "spar")
 
     def test_combined(self):
-        self.assertEqual(_normalize_alias("  Easy EQUITIES  "), "easy equities")
+        self.assertEqual(normalize_alias("  Easy EQUITIES  "), "easy equities")
 
 
 class TestPromptAliasRequired(unittest.TestCase):

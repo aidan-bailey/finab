@@ -133,3 +133,62 @@ class TestSyncMerchants(unittest.TestCase):
         self.ynab_client.create_payee.assert_not_called()
         m = self.store.merchant_by_finwise_id("fw-spar")
         self.assertEqual(len(m["finwise"]), 1)
+
+
+class TestRecordMerchantAliasFallback(unittest.TestCase):
+    """Defensive fallback path: _record_merchant_alias should fully link to
+    a YNAB payee, not leave an empty ynab={} placeholder."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.config_path = Path(self.tmpdir.name) / "config.json"
+        self.store = ConfigStore(self.config_path)
+        self.ynab_client = MagicMock()
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_creates_full_merchant_when_no_match(self):
+        from finab.main import _record_merchant_alias
+        self.ynab_client.get_payees.return_value = []
+        created = MagicMock(id="yn-new", name="Foo")
+        created.to_dict.return_value = {"id": "yn-new", "name": "Foo"}
+        created.model_dump.return_value = {"id": "yn-new", "name": "Foo"}
+        self.ynab_client.create_payee.return_value = created
+
+        _record_merchant_alias(
+            self.store,
+            self.ynab_client,
+            "bid",
+            fw_merchant_id="fw-foo",
+            alias="Foo",
+            fw_merchant_name="Foo",
+        )
+
+        m = self.store.merchant_by_finwise_id("fw-foo")
+        self.assertIsNotNone(m)
+        self.assertEqual(m["ynab"], {"id": "yn-new", "name": "Foo"})
+        self.ynab_client.create_payee.assert_called_once_with("bid", "Foo")
+
+    def test_attaches_to_existing_merchant_by_alias(self):
+        from finab.main import _record_merchant_alias
+        self.store.add_merchant(
+            alias="Shell",
+            fw_record={"id": "fw-shell-1", "name": "Shell"},
+            ynab_record={"id": "yn-shell", "name": "Shell"},
+        )
+        self.store = ConfigStore(self.config_path)
+
+        _record_merchant_alias(
+            self.store,
+            self.ynab_client,
+            "bid",
+            fw_merchant_id="fw-shell-2",
+            alias="Shell",
+            fw_merchant_name="Shell",
+        )
+
+        self.ynab_client.create_payee.assert_not_called()
+        m = self.store.merchant_by_finwise_id("fw-shell-2")
+        self.assertIn("fw-shell-1", m["finwise"])
+        self.assertIn("fw-shell-2", m["finwise"])

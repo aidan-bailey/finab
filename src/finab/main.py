@@ -22,9 +22,7 @@ from finab.config import (
     save_cache,
     clear_cache,
 )
-from finab.store import ConfigStore, to_dict
-import random
-import string
+from finab.store import ConfigStore, to_dict, normalize_alias
 import hashlib
 
 
@@ -46,14 +44,6 @@ def normalize_payee_for_matching(payee_name: Optional[str]) -> str:
     # Truncate to 50 chars (YNAB's limit) and convert to lowercase
     normalized = payee_name[:50] if len(payee_name) > 50 else payee_name
     return normalized.lower()
-
-
-def _normalize_alias(alias: str) -> str:
-    """Normalize an alias for lookup (lowercased, whitespace stripped).
-
-    The stored alias keeps original casing; only index keys are normalized.
-    """
-    return alias.strip().lower()
 
 
 def _prompt_alias_required(prompt: str, default: Optional[str] = None) -> str:
@@ -102,19 +92,56 @@ def _calculate_starting_balance(fw_acc, fw_client) -> int:
     return int(fw_acc.balance - adjustment)
 
 
-def _record_merchant_alias(store: ConfigStore, fw_merchant_id: str, alias: str, fw_merchant_name: Optional[str] = None) -> None:
+def _record_merchant_alias(
+    store: ConfigStore,
+    ynab_client: YNABClient,
+    budget_id: str,
+    fw_merchant_id: str,
+    alias: str,
+    fw_merchant_name: Optional[str] = None,
+) -> None:
     """Defensive fallback used by the transaction pipeline when a merchant id
-    appears that wasn't covered by Phase 2. Attaches to an existing merchant
-    matching `alias`, or creates a new merchant with a placeholder ynab record."""
+    appears that wasn't covered by Phase 2. Does the same 3-way fork as
+    sync_merchants: attach to existing merchant, link existing YNAB payee, or
+    create a new YNAB payee."""
     fw_record = {"id": fw_merchant_id, "name": fw_merchant_name or fw_merchant_id}
 
+    # 1. Existing merchant by alias?
     existing = store.merchant_by_alias(alias)
     if existing:
         store.attach_finwise_to_merchant(existing["id"], fw_record)
         return
-    # No existing merchant; create one with an empty ynab record. Phase 2
-    # on the next run will pick this up if a matching YNAB payee exists.
-    store.add_merchant(alias=alias, fw_record=fw_record, ynab_record={})
+
+    # 2. Existing YNAB payee by name?
+    try:
+        ynab_payees = ynab_client.get_payees(budget_id)
+    except Exception:
+        ynab_payees = []
+    ynab_match = next(
+        (p for p in ynab_payees if normalize_alias(p.name) == normalize_alias(alias)),
+        None,
+    )
+    if ynab_match:
+        store.add_merchant(
+            alias=alias,
+            fw_record=fw_record,
+            ynab_record=to_dict(ynab_match),
+        )
+        return
+
+    # 3. Create new YNAB payee
+    try:
+        new_payee = ynab_client.create_payee(budget_id, alias)
+        store.add_merchant(
+            alias=alias,
+            fw_record=fw_record,
+            ynab_record=to_dict(new_payee),
+        )
+    except Exception as e:
+        print(f"Failed to create YNAB payee '{alias}': {e}")
+        # Fall back to an empty ynab record so the FW id is at least
+        # captured; user can resolve via a Phase 2 re-run.
+        store.add_merchant(alias=alias, fw_record=fw_record, ynab_record={})
 
 
 def _extract_distinct_merchants(fw_transactions) -> list[dict]:
@@ -172,7 +199,7 @@ def sync_accounts(
 
     store.refresh_records(fw_accounts=fw_accounts, ynab_accounts=ynab_accounts)
 
-    ynab_by_name = {_normalize_alias(a.name): a for a in ynab_accounts}
+    ynab_by_name = {normalize_alias(a.name): a for a in ynab_accounts}
 
     for fw_acc in fw_accounts:
         if store.account_by_finwise_id(fw_acc.finwise_id):
@@ -183,7 +210,7 @@ def sync_accounts(
             default=fw_acc.name,
         )
 
-        match = ynab_by_name.get(_normalize_alias(alias))
+        match = ynab_by_name.get(normalize_alias(alias))
         if match:
             fw_record = {
                 "id": fw_acc.finwise_id,
@@ -259,7 +286,7 @@ def sync_merchants(
     fw_merchants = _extract_distinct_merchants(fw_transactions)
     print(f"Distinct FinWise merchants in period: {len(fw_merchants)}")
 
-    ynab_by_name = {_normalize_alias(p.name): p for p in ynab_payees}
+    ynab_by_name = {normalize_alias(p.name): p for p in ynab_payees}
 
     for fw_m in fw_merchants:
         if store.merchant_by_finwise_id(fw_m["id"]):
@@ -279,7 +306,7 @@ def sync_merchants(
             )
             continue
 
-        ynab_match = ynab_by_name.get(_normalize_alias(alias))
+        ynab_match = ynab_by_name.get(normalize_alias(alias))
         if ynab_match:
             store.add_merchant(
                 alias=alias,
@@ -458,6 +485,8 @@ def process_payee_aliases(
             if target:
                 _record_merchant_alias(
                     store,
+                    ynab_client,
+                    budget_id,
                     fw_merchant_id=fw_txn.merchant_id,
                     alias=target,
                     fw_merchant_name=getattr(fw_txn, "merchant_name", None),
@@ -1043,6 +1072,8 @@ def process_categories(
 
                     _record_merchant_alias(
                         store,
+                        ynab_client,
+                        budget_id,
                         fw_merchant_id=fw_txn.merchant_id,
                         alias=new_payee,
                         fw_merchant_name=getattr(fw_txn, "merchant_name", None),
