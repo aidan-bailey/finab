@@ -6,18 +6,21 @@ import dataclasses
 from dotenv import load_dotenv
 
 import ynab
-from ynab.api.accounts_api import AccountsApi
-from ynab.api.budgets_api import BudgetsApi
-from ynab.api.categories_api import CategoriesApi
-from ynab.api.payees_api import PayeesApi
-from ynab.api.transactions_api import TransactionsApi
-from ynab.models.save_account import SaveAccount
-from ynab.models.post_account_wrapper import PostAccountWrapper
-from ynab.models.new_transaction import NewTransaction
-from ynab.models.post_transactions_wrapper import PostTransactionsWrapper
-from ynab.models.existing_transaction import ExistingTransaction
-from ynab.models.patch_transactions_wrapper import PatchTransactionsWrapper
-from ynab.models.save_sub_transaction import SaveSubTransaction
+from ynab import (
+    AccountsApi,
+    CategoriesApi,
+    PayeesApi,
+    TransactionsApi,
+    SaveAccount,
+    PostAccountWrapper,
+    NewTransaction,
+    PostTransactionsWrapper,
+    ExistingTransaction,
+    PatchTransactionsWrapper,
+    SaveSubTransaction,
+    PostPayee,
+    PostPayeeWrapper,
+)
 
 from finab.models import YNABTransaction, Transaction, Account
 
@@ -54,9 +57,12 @@ class YNABClient:
         Returns:
             List of budget summary objects from ynab.
         """
-        budgets_api = BudgetsApi(self.api_client)
-        response = budgets_api.get_budgets()
-        return response.data.budgets
+        # Note: BudgetsApi was removed in newer ynab SDK versions.
+        # Using PlansApi instead (plans = budgets in new terminology).
+        from ynab import PlansApi
+        plans_api = PlansApi(self.api_client)
+        response = plans_api.get_plans()
+        return response.data.plans
 
     def get_transactions(
         self,
@@ -167,6 +173,13 @@ class YNABClient:
         )
         data = PostAccountWrapper(account=save_account)
         return accounts_api.create_account(budget_id, data)
+
+    def create_payee(self, budget_id: str, name: str) -> Any:
+        """Create a new payee in the budget. Returns the created payee record."""
+        payees_api = PayeesApi(self.api_client)
+        wrapper = PostPayeeWrapper(payee=PostPayee(name=name))
+        response = payees_api.create_payee(budget_id, wrapper)
+        return response.data.payee
 
     def create_transactions(
         self,
