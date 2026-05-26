@@ -77,6 +77,70 @@ def _prompt_alias_required(prompt: str, default: Optional[str] = None) -> str:
         print("Alias is required. Please enter a value.")
 
 
+def _gather_pickable_entries(store: "ConfigStore") -> list[dict]:
+    """Flat list of all alias-selectable entries: merchants first, then accounts."""
+    entries = []
+    for m in sorted(store.merchants(), key=lambda x: x["alias"].lower()):
+        entries.append({"kind": "merchant", "alias": m["alias"]})
+    for a in sorted(store.accounts(), key=lambda x: x["alias"].lower()):
+        entries.append({"kind": "account", "alias": a["alias"]})
+    return entries
+
+
+def _interactive_pick(store: "ConfigStore") -> Optional[str]:
+    """Show a numbered list of existing entries; return the alias the user picks,
+    or None if they bail back to free-form input."""
+    entries = _gather_pickable_entries(store)
+    if not entries:
+        print(_dim("  (no existing merchants or accounts yet)"))
+        return None
+
+    print()
+    print(_bold("  Existing entries:"))
+    for i, e in enumerate(entries, start=1):
+        tag = _dim("[m]") if e["kind"] == "merchant" else _yellow("[a]")
+        print(f"  {i:>3}. {tag} {e['alias']}")
+    print()
+
+    while True:
+        raw = input(_cyan("  Pick a number, or Enter to go back: ")).strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            n = int(raw)
+            if 1 <= n <= len(entries):
+                return entries[n - 1]["alias"]
+            print(f"  Out of range (1..{len(entries)})")
+            continue
+        # Any non-digit input is treated as a free-form alias entry.
+        return raw
+
+
+def _prompt_alias_with_picker(
+    prompt: str, store: "ConfigStore", default: Optional[str] = None
+) -> str:
+    """Same contract as _prompt_alias_required, but '?' opens an interactive
+    picker over existing merchants and accounts."""
+    while True:
+        if default:
+            shown = f"{prompt} (default: '{default}', '?' to list): "
+        else:
+            shown = f"{prompt} ('?' to list): "
+        raw = input(shown).strip()
+
+        if raw == "?":
+            picked = _interactive_pick(store)
+            if picked is not None:
+                return picked
+            continue
+
+        if raw:
+            return raw
+        if default:
+            return default
+        print("Alias is required. Please enter a value, or '?' to choose.")
+
+
 def generate_import_id(original_id: str, offset: str) -> str:
     """
     Generate a deterministic, unique import_id for YNAB.
@@ -412,8 +476,9 @@ def sync_merchants(
                 if orig:
                     print(f"  {' ' * 24}{_dim('└─ ' + orig)}")
 
-        alias = _prompt_alias_required(
+        alias = _prompt_alias_with_picker(
             _cyan("  → YNAB payee name"),
+            store,
             default=fw_m.get("name") or None,
         )
 
