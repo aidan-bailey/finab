@@ -102,6 +102,21 @@ def _calculate_starting_balance(fw_acc, fw_client) -> int:
     return int(fw_acc.balance - adjustment)
 
 
+def _record_merchant_alias(store: ConfigStore, fw_merchant_id: str, alias: str, fw_merchant_name: Optional[str] = None) -> None:
+    """Defensive fallback used by the transaction pipeline when a merchant id
+    appears that wasn't covered by Phase 2. Attaches to an existing merchant
+    matching `alias`, or creates a new merchant with a placeholder ynab record."""
+    fw_record = {"id": fw_merchant_id, "name": fw_merchant_name or fw_merchant_id}
+
+    existing = store.merchant_by_alias(alias)
+    if existing:
+        store.attach_finwise_to_merchant(existing["id"], fw_record)
+        return
+    # No existing merchant; create one with an empty ynab record. Phase 2
+    # on the next run will pick this up if a matching YNAB payee exists.
+    store.add_merchant(alias=alias, fw_record=fw_record, ynab_record={})
+
+
 def _extract_distinct_merchants(fw_transactions) -> list[dict]:
     """Walk FinWise transactions and emit one record per unique merchant_id.
 
@@ -342,12 +357,12 @@ def fetch_transactions(
 
 
 def process_payee_aliases(
-    fw_transactions, ynab_client, budget_id, account_id_to_name, ynab_accounts
+    fw_transactions, ynab_client, budget_id, account_id_to_name, ynab_accounts, store: ConfigStore
 ):
     """Applies payee aliasing rules and prompts user for unknowns."""
     print("Processing payee aliases...")
     payee_rules = load_payee_rules()
-    merchant_aliases = load_merchant_aliases()
+    merchant_aliases = load_merchant_aliases(store=store)
 
     # Build account name -> transfer_payee_id map for auto-transfer detection
     account_transfer_map = {
@@ -380,7 +395,6 @@ def process_payee_aliases(
     session_ignored_payees = set()
     session_ignored_merchants = set()
     rules_modified = False
-    merchant_aliases_modified = False
 
     for fw_txn in fw_transactions:
         # FinWiseTransaction uses 'description' as payee_name and memo in 'from_finwise'
@@ -425,9 +439,14 @@ def process_payee_aliases(
             ).strip()
 
             if target:
+                _record_merchant_alias(
+                    store,
+                    fw_merchant_id=fw_txn.merchant_id,
+                    alias=target,
+                    fw_merchant_name=getattr(fw_txn, "merchant_name", None),
+                )
+                # Update local dict so subsequent transactions in this session see it
                 merchant_aliases[fw_txn.merchant_id] = target
-                merchant_aliases_modified = True
-                save_merchant_aliases(merchant_aliases)  # Save immediately
 
                 print(f"Mapping saved: {fw_txn.merchant_id} -> {target}")
                 if apply_transfer_if_account(fw_txn, target):
@@ -542,9 +561,6 @@ def process_payee_aliases(
 
     if rules_modified:
         save_payee_rules(payee_rules)
-
-    if merchant_aliases_modified:
-        save_merchant_aliases(merchant_aliases)
 
 
 def merge_and_filter_transactions(
@@ -783,6 +799,7 @@ def process_categories(
     budget_id,
     account_id_to_name,
     ynab_accounts,
+    store: ConfigStore,
 ):
     """Processes category matching and prompts user."""
     print("Processing categories...")
@@ -1007,9 +1024,12 @@ def process_categories(
                         print("Cancelled.")
                         continue
 
-                    merchant_aliases = load_merchant_aliases()
-                    merchant_aliases[fw_txn.merchant_id] = new_payee
-                    save_merchant_aliases(merchant_aliases)
+                    _record_merchant_alias(
+                        store,
+                        fw_merchant_id=fw_txn.merchant_id,
+                        alias=new_payee,
+                        fw_merchant_name=getattr(fw_txn, "merchant_name", None),
+                    )
 
                     fw_txn.payee_name = new_payee
                     # Clear any prior transfer marking so the new payee sticks
@@ -1201,7 +1221,7 @@ def sync_changes_to_ynab(transactions_to_sync, ynab_client, budget_id, ynab_acco
 
 
 def sync_transactions(
-    finwise_client: FinWiseClient, ynab_client: YNABClient, budget_id: str
+    finwise_client: FinWiseClient, ynab_client: YNABClient, budget_id: str, store: ConfigStore
 ):
     print("\n--- Transaction Sync ---")
 
@@ -1227,7 +1247,7 @@ def sync_transactions(
     finwise_transactions = [t for t in transactions_to_process if t.import_id]
     if finwise_transactions:
         process_payee_aliases(
-            finwise_transactions, ynab_client, budget_id, account_id_to_name, ynab_accounts
+            finwise_transactions, ynab_client, budget_id, account_id_to_name, ynab_accounts, store
         )
 
     # Restore in-progress decisions from a previous (possibly aborted) run.
@@ -1241,6 +1261,7 @@ def sync_transactions(
         budget_id,
         account_id_to_name,
         ynab_accounts,
+        store,
     )
 
     # Capture the final iteration's decision before pushing to YNAB.
@@ -1327,7 +1348,7 @@ def main():
             sync_merchants(fw_client, ynab_client, budget_id, store)
 
             # Phase 3 (existing transaction pipeline, unchanged)
-            sync_transactions(fw_client, ynab_client, budget_id)
+            sync_transactions(fw_client, ynab_client, budget_id, store)
 
     except Exception as e:
         print(f"An error occurred: {e}")

@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from datetime import date
 import sys
@@ -8,6 +10,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
 
 from finab.main import sync_transactions
+from finab.store import ConfigStore
 
 
 class TestSyncTransactions(unittest.TestCase):
@@ -76,7 +79,9 @@ class TestSyncTransactions(unittest.TestCase):
         mock_ynab_client.get_transactions.return_value = []  # No existing txns
 
         # Run
-        sync_transactions(mock_fw_client, mock_ynab_client, budget_id)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = ConfigStore(path=Path(tmpdir) / "config.json")
+            sync_transactions(mock_fw_client, mock_ynab_client, budget_id, store)
 
         # Verify
         # Should call create_transactions
