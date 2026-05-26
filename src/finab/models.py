@@ -137,6 +137,7 @@ class Transaction(BaseModel):
     payee_name: Optional[str] = None
     category_id: Optional[str] = None
     memo: Optional[str] = None
+    original_description: Optional[str] = None
     merchant_id: Optional[str] = None
     merchant_name: Optional[str] = None
     import_id: Optional[str] = None
@@ -154,6 +155,7 @@ class Transaction(BaseModel):
             amount=int(txn.amount.amount * 1000),
             payee_name=txn.description,
             memo=txn.description,
+            original_description=txn.original_description,
             merchant_id=txn.merchant_id,
             merchant_name=txn.merchant_name,
             import_id=txn.id,

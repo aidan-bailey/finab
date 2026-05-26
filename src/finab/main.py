@@ -205,37 +205,34 @@ def map_accounts(
         ynab_accounts = ynab_client.get_accounts(budget_id)
         account_aliases = load_aliases()
 
-        # Build map of FinWise ID -> FinWise Account Name for display
-        fw_id_to_name = {}
-        for acc in fw_accounts:
-            if acc.finwise_id:
-                fw_id_to_name[acc.finwise_id] = acc.name
-
-        # Map FinWise Account ID -> YNAB Account ID via Name
-        # We need a map: {fw_acc.id: ynab_acc.ynab_id}
-        # First build name map for YNAB
         ynab_map_by_name = {
             acc.name: acc.ynab_id for acc in ynab_accounts if acc.ynab_id
         }
 
+        # account_id_to_name maps YNAB account ID -> FinWise account name. We key
+        # by YNAB ID because merge_and_filter_transactions rewrites each
+        # transaction's account_id from the FinWise ID to the YNAB ID before the
+        # display code in process_payee_aliases / process_categories runs.
         fw_id_to_ynab_id = {}
+        account_id_to_name = {}
         for fw_acc in fw_accounts:
-            if fw_acc.finwise_id:  # Account model from FinWise has finwise_id populated mapping from its own id
-                # Determine the lookup name using alias if available
-                lookup_name = account_aliases.get(fw_acc.name, fw_acc.name)
-
-                if lookup_name in ynab_map_by_name:
-                    fw_id_to_ynab_id[fw_acc.finwise_id] = ynab_map_by_name[lookup_name]
-                else:
-                    print(
-                        f"Warning: Account '{fw_acc.name}' (mapped as '{lookup_name}') found in FinWise but not mapped to YNAB. Transactions for this account will be skipped."
-                    )
+            if not fw_acc.finwise_id:
+                continue
+            lookup_name = account_aliases.get(fw_acc.name, fw_acc.name)
+            if lookup_name in ynab_map_by_name:
+                ynab_id = ynab_map_by_name[lookup_name]
+                fw_id_to_ynab_id[fw_acc.finwise_id] = ynab_id
+                account_id_to_name[ynab_id] = fw_acc.name
+            else:
+                print(
+                    f"Warning: Account '{fw_acc.name}' (mapped as '{lookup_name}') found in FinWise but not mapped to YNAB. Transactions for this account will be skipped."
+                )
 
         if not fw_id_to_ynab_id:
             print("No accounts mapped. Aborting transaction sync.")
             return None, None, None
 
-        return fw_id_to_ynab_id, fw_id_to_name, ynab_accounts
+        return fw_id_to_ynab_id, account_id_to_name, ynab_accounts
 
     except Exception as e:
         print(f"Failed to map accounts: {e}")
@@ -270,7 +267,7 @@ def fetch_transactions(
 
 
 def process_payee_aliases(
-    fw_transactions, ynab_client, budget_id, fw_id_to_name, ynab_accounts
+    fw_transactions, ynab_client, budget_id, account_id_to_name, ynab_accounts
 ):
     """Applies payee aliasing rules and prompts user for unknowns."""
     print("Processing payee aliases...")
@@ -340,7 +337,7 @@ def process_payee_aliases(
             # Let's prompt if ID is unknown, but maybe offer the description as default.
 
             # Get account name for display
-            account_name = fw_id_to_name.get(fw_txn.account_id, "Unknown Account")
+            account_name = account_id_to_name.get(fw_txn.account_id, "Unknown Account")
             amount_val = fw_txn.amount / 1000.0
 
             print(f"\nAccount: '{account_name}' | Amount: {amount_val:.2f}")
@@ -405,7 +402,7 @@ def process_payee_aliases(
         # That's okay, maybe they want to regex map the description instead.)
 
         # Get account name for display
-        account_name = fw_id_to_name.get(fw_txn.account_id, "Unknown Account")
+        account_name = account_id_to_name.get(fw_txn.account_id, "Unknown Account")
 
         # Format amount
         amount_val = fw_txn.amount / 1000.0
@@ -596,7 +593,7 @@ def process_categories(
     transactions_to_process,
     ynab_client,
     budget_id,
-    fw_id_to_name,
+    account_id_to_name,
     ynab_accounts,
 ):
     """Processes category matching and prompts user."""
@@ -662,11 +659,13 @@ def process_categories(
                 continue
 
             # Prompt user
-            account_name = fw_id_to_name.get(fw_txn.account_id, "Unknown Account")
+            account_name = account_id_to_name.get(fw_txn.account_id, "Unknown Account")
             amount_val = fw_txn.amount / 1000.0
 
             print(f"\nAccount: '{account_name}' | Amount: {amount_val:.2f}")
             print(f"Description: {description}")
+            if fw_txn.original_description and fw_txn.original_description != description:
+                print(f"Original Description: {fw_txn.original_description}")
             print(f"Payee: {fw_txn.payee_name}")  # Show resolved payee
 
             # Show if this is an existing YNAB transaction
@@ -926,7 +925,7 @@ def sync_transactions(
 ):
     print("\n--- Transaction Sync ---")
 
-    fw_id_to_ynab_id, fw_id_to_name, ynab_accounts = map_accounts(
+    fw_id_to_ynab_id, account_id_to_name, ynab_accounts = map_accounts(
         finwise_client, ynab_client, budget_id
     )
     if not fw_id_to_ynab_id:
@@ -948,7 +947,7 @@ def sync_transactions(
     finwise_transactions = [t for t in transactions_to_process if t.import_id]
     if finwise_transactions:
         process_payee_aliases(
-            finwise_transactions, ynab_client, budget_id, fw_id_to_name, ynab_accounts
+            finwise_transactions, ynab_client, budget_id, account_id_to_name, ynab_accounts
         )
 
     # Process categories for all transactions
@@ -956,7 +955,7 @@ def sync_transactions(
         transactions_to_process,
         ynab_client,
         budget_id,
-        fw_id_to_name,
+        account_id_to_name,
         ynab_accounts,
     )
 
