@@ -332,5 +332,53 @@ class TestPromptMemo(unittest.TestCase):
         self.assertEqual(_prompt_memo(""), "spaced")
 
 
+from finab.transactions import _collect_splits
+
+
+class TestCollectSplits(unittest.TestCase):
+    def _txn(self, amount):
+        t = MagicMock()
+        t.amount = amount
+        return t
+
+    def _category(self, cid, name):
+        c = MagicMock(id=cid, hidden=False, deleted=False)
+        c.name = name
+        return c
+
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    @patch("builtins.input", side_effect=[
+        # split count
+        "2",
+        # split 1 amount, category number, memo
+        "60", "1", "fuel only",
+        # split 2 amount (default = remaining), category number, memo
+        "", "2", "",
+    ])
+    def test_collects_two_splits_with_remaining_default(self, _input, _stdout):
+        txn = self._txn(-100000)  # -100.00
+        merchant = {"alias": "Spar", "categories_used": {"c-petrol": 5, "c-snacks": 1}}
+        categories = [self._category("c-petrol", "Petrol"), self._category("c-snacks", "Snacks")]
+        splits = _collect_splits(txn, merchant, categories, [], MagicMock(), "bid")
+        self.assertIsNotNone(splits)
+        self.assertEqual(len(splits), 2)
+        self.assertEqual(splits[0]["category_id"], "c-petrol")
+        self.assertEqual(splits[0]["amount_milliunits"], -60000)
+        self.assertEqual(splits[0]["memo"], "fuel only")
+        self.assertEqual(splits[1]["category_id"], "c-snacks")
+        self.assertEqual(splits[1]["amount_milliunits"], -40000)
+        self.assertEqual(splits[1]["memo"], "")
+        # All splits sum to txn.amount
+        self.assertEqual(sum(s["amount_milliunits"] for s in splits), txn.amount)
+
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    @patch("builtins.input", side_effect=["0"])
+    def test_invalid_count_returns_none(self, _input, _stdout):
+        txn = self._txn(-1000)
+        merchant = {"alias": "X", "categories_used": {}}
+        result = _collect_splits(txn, merchant, [], [], MagicMock(), "bid")
+        self.assertIsNone(result)
+
+
 if __name__ == "__main__":
     unittest.main()

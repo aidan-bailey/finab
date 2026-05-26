@@ -281,6 +281,86 @@ def _prompt_memo(default: str = "") -> str:
     return raw if raw else default
 
 
+def _collect_splits(
+    txn,
+    merchant: dict,
+    ynab_categories: list,
+    category_groups: list,
+    ynab_client: YNABClient,
+    budget_id: str,
+) -> Optional[list]:
+    """Walk the user through splitting `txn` across multiple categories.
+    Returns a list of {category_id, amount_milliunits, memo} dicts summing
+    exactly to txn.amount, or None if cancelled.
+
+    Amounts use the same sign as txn.amount (typically negative for outflows).
+    Each split's default amount is `remaining / splits_left`; the final
+    split defaults to the exact remainder so the total reconciles.
+    """
+    total = txn.amount
+    sign = -1 if total < 0 else 1
+    abs_total = abs(total)
+
+    raw = input(_cyan("  How many splits? [2]: ")).strip()
+    n = 2
+    if raw:
+        try:
+            n = int(raw)
+        except ValueError:
+            print("  Invalid count.")
+            return None
+    if n < 2:
+        print("  Splits must be 2 or more.")
+        return None
+
+    splits = []
+    remaining = abs_total
+    for i in range(1, n + 1):
+        splits_left = n - i + 1
+        default_amt = (remaining / splits_left) if splits_left else 0
+        # Show default with two decimals
+        label = "remaining" if splits_left == 1 else f"{default_amt/1000:.2f}"
+        amt_raw = input(_cyan(f"  Split {i} of {n} — amount [{label}]: ")).strip()
+        if amt_raw:
+            try:
+                amt_abs = float(amt_raw)
+            except ValueError:
+                print("  Invalid amount.")
+                return None
+            if amt_abs <= 0:
+                print("  Amount must be positive.")
+                return None
+            amt_milli = int(round(amt_abs * 1000))
+            if amt_milli > remaining:
+                print(f"  Exceeds remaining {remaining/1000:.2f}.")
+                return None
+        else:
+            # Default: divide remaining by splits_left, or take remainder on the last split.
+            if splits_left == 1:
+                amt_milli = remaining
+            else:
+                amt_milli = int(round(default_amt))
+
+        cat_id = _pick_category(merchant, ynab_categories, category_groups, ynab_client, budget_id)
+        if cat_id is None:
+            return None
+
+        memo = _prompt_memo("")
+
+        splits.append({
+            "category_id": cat_id,
+            "amount_milliunits": sign * amt_milli,
+            "memo": memo,
+        })
+        remaining -= amt_milli
+
+    # If remainder didn't quite zero out (rounding), put it on the last split.
+    if remaining != 0 and splits:
+        splits[-1]["amount_milliunits"] += sign * remaining
+
+    return splits
+
+
 class _PendingQueue:
     """Holds categorized-but-not-yet-pushed transactions. Flushed on demand
     via the `f` command, at end of run, or after Ctrl+C confirmation."""
