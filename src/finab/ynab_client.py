@@ -112,6 +112,10 @@ class YNABClient:
         for acc in response.data.accounts:
             if acc.closed:
                 continue
+            # New ynab SDK types id/transfer_payee_id as uuid.UUID; the internal
+            # Account model expects str. Stringify at the boundary.
+            # acc.type is an AccountType enum that inherits from str — pass it
+            # directly (str() would return "AccountType.X" instead of the value).
             accounts.append(
                 Account(
                     name=acc.name,
@@ -119,8 +123,12 @@ class YNABClient:
                     balance=acc.balance,
                     currency_code="",
                     finwise_id=None,
-                    ynab_id=acc.id,
-                    transfer_payee_id=acc.transfer_payee_id,
+                    ynab_id=str(acc.id) if acc.id is not None else None,
+                    transfer_payee_id=(
+                        str(acc.transfer_payee_id)
+                        if acc.transfer_payee_id is not None
+                        else None
+                    ),
                 )
             )
         return accounts
