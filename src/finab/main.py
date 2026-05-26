@@ -1,6 +1,7 @@
 from datetime import date
 from typing import Optional
 import re
+import sys
 from dotenv import load_dotenv
 from finab.client import FinWiseClient
 from finab.ynab_client import YNABClient
@@ -24,6 +25,21 @@ from finab.config import (
 )
 from finab.store import ConfigStore, to_dict, normalize_alias
 import hashlib
+
+
+def _color(code: str, s: str) -> str:
+    """Wrap `s` in an ANSI color escape if stdout is a TTY; otherwise return plain."""
+    if not sys.stdout.isatty():
+        return s
+    return f"\033[{code}m{s}\033[0m"
+
+
+def _bold(s: str) -> str:   return _color("1", s)
+def _dim(s: str) -> str:    return _color("2", s)
+def _red(s: str) -> str:    return _color("31", s)
+def _green(s: str) -> str:  return _color("32", s)
+def _yellow(s: str) -> str: return _color("33", s)
+def _cyan(s: str) -> str:   return _color("36", s)
 
 
 def normalize_payee_for_matching(payee_name: Optional[str]) -> str:
@@ -52,7 +68,7 @@ def _prompt_alias_required(prompt: str, default: Optional[str] = None) -> str:
         if default:
             shown = f"{prompt} (default: '{default}'): "
         else:
-            shown = prompt
+            shown = f"{prompt}: "
         raw = input(shown).strip()
         if raw:
             return raw
@@ -323,31 +339,48 @@ def sync_merchants(
     store.refresh_records(ynab_payees=ynab_payees)
 
     fw_merchants = _extract_distinct_merchants(fw_transactions)
-    print(f"Distinct FinWise merchants in period: {len(fw_merchants)}")
+    unknown = [m for m in fw_merchants if not store.merchant_by_finwise_id(m["id"])]
+    total = len(unknown)
+    print(
+        f"Distinct FinWise merchants in period: {len(fw_merchants)} "
+        f"({_yellow(str(total))} new)"
+    )
 
     ynab_by_name = {normalize_alias(p.name): p for p in ynab_payees}
 
-    for fw_m in fw_merchants:
+    for idx, fw_m in enumerate(unknown, start=1):
+        # Re-check inside the loop in case a previous iteration's
+        # attach_finwise_to_merchant absorbed this merchant via alias dedup.
         if store.merchant_by_finwise_id(fw_m["id"]):
             continue
 
-        # Show enough context to identify the merchant. FinWise's merchant_name
-        # is frequently null, so the transaction description + sample amount
-        # is what the user actually needs to recognize the merchant.
-        print(f"\n--- Unknown merchant ---")
-        print(f"  Merchant ID:    {fw_m['id']}")
-        print(f"  Merchant Name:  {fw_m.get('name') or '(none)'}")
-        for s in fw_m.get("samples", []):
-            amount_str = f"{s['amount']:.2f}" if s.get("amount") is not None else "?"
-            date_str = s.get("date") or "?"
-            desc = s.get("description") or "(no description)"
-            print(f"  Sample:         {date_str}  {amount_str:>10}  {desc}")
-            orig = s.get("original_description")
-            if orig:
-                print(f"  (original):                          {orig}")
+        # Header bar with progress counter
+        header = f" Merchant {idx} of {total} "
+        bar = "━" * max(0, 60 - len(header))
+        print(f"\n{_cyan('━━━')}{_bold(_cyan(header))}{_cyan(bar)}")
+
+        print(f"  {_dim('ID  ')} {_yellow(fw_m['id'])}")
+        print(f"  {_dim('Name')} {fw_m.get('name') or _dim('(none)')}")
+
+        samples = fw_m.get("samples", [])
+        if samples:
+            print(f"  {_dim('Date         Amount      Description')}")
+            for s in samples:
+                date_str = s.get("date") or "?"
+                if s.get("amount") is not None:
+                    amt = s["amount"]
+                    raw = f"{amt:>10.2f}"
+                    amount_str = _red(raw) if amt < 0 else _green(raw)
+                else:
+                    amount_str = f"{'?':>10}"
+                desc = s.get("description") or _dim("(no description)")
+                print(f"  {date_str}   {amount_str}   {desc}")
+                orig = s.get("original_description")
+                if orig:
+                    print(f"  {' ' * 24}{_dim('└─ ' + orig)}")
 
         alias = _prompt_alias_required(
-            "Enter YNAB payee name",
+            _cyan("  → YNAB payee name"),
             default=fw_m.get("name") or None,
         )
 
