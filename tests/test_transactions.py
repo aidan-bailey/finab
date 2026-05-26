@@ -512,5 +512,139 @@ class TestUpdateMerchantMemory(unittest.TestCase):
         self.assertEqual(m["categories_used"]["cat-A"], 2)
 
 
+from unittest.mock import patch
+from finab.transactions import _process_one_transaction
+
+
+class TestProcessOneTransaction(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmpdir.name) / "config.json"
+        self.store = ConfigStore(self.path)
+        self.merchant = self.store.add_merchant(
+            alias="Spar",
+            fw_record={"id": "fw-spar", "name": "Spar"},
+            ynab_record={"id": "yn-spar", "name": "Spar"},
+        )
+        self.store = ConfigStore(self.path)
+        self.ynab_client = MagicMock()
+        self.category = MagicMock(id="c-petrol", hidden=False, deleted=False)
+        self.category.name = "Petrol"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _txn(self, amount, merchant_id="fw-spar"):
+        t = MagicMock()
+        t.amount = amount
+        t.merchant_id = merchant_id
+        t.memo = "spar receipt"
+        t.payee_id = None
+        t.payee_name = None
+        t.category_id = None
+        t.subtransactions = []
+        return t
+
+    def test_inflow_auto_categorizes(self):
+        txn = self._txn(50000)  # positive
+        inflow_cat = MagicMock(id="c-inflow", hidden=False, deleted=False)
+        inflow_cat.name = "Inflow: Ready to Assign"
+        outcome = _process_one_transaction(
+            txn, 1, 1, 0, self.store, self.ynab_client, "bid",
+            [inflow_cat], [],
+        )
+        self.assertEqual(outcome, "categorized")
+        self.assertEqual(txn.category_id, "c-inflow")
+
+    def test_no_merchant_returns_categorized_uncategorized(self):
+        txn = self._txn(-1000, merchant_id=None)
+        outcome = _process_one_transaction(
+            txn, 1, 1, 0, self.store, self.ynab_client, "bid",
+            [self.category], [],
+        )
+        self.assertEqual(outcome, "categorized")
+        self.assertIsNone(txn.category_id)
+
+    def test_transfer_merchant_sets_payee_no_category(self):
+        # Create a transfer-payee merchant
+        self.store.add_merchant(
+            alias="Discovery Bank ZAR",
+            fw_record={"id": "fw-xfer", "name": "Discovery"},
+            ynab_record={"id": "yn-xfer-payee", "transfer_account_id": "yn-acc"},
+        )
+        self.store = ConfigStore(self.path)
+        txn = self._txn(-2000, merchant_id="fw-xfer")
+        outcome = _process_one_transaction(
+            txn, 1, 1, 0, self.store, self.ynab_client, "bid",
+            [self.category], [],
+        )
+        self.assertEqual(outcome, "categorized")
+        self.assertEqual(txn.payee_id, "yn-xfer-payee")
+        self.assertIsNone(txn.category_id)
+
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    @patch("builtins.input", side_effect=["c", "1", ""])
+    def test_interactive_single_category(self, _input, _stdout):
+        self.store.set_merchant_memory(
+            self.merchant["id"],
+            categories_used={"c-petrol": 1},
+            last_processing={
+                "amount_milliunits": -9999,  # mismatched so no Enter-repeat
+                "parent_memo": "",
+                "splits": [{"category_id": "c-petrol",
+                            "amount_milliunits": -9999, "memo": ""}],
+            },
+        )
+        self.store = ConfigStore(self.path)
+        txn = self._txn(-3000)
+
+        outcome = _process_one_transaction(
+            txn, 1, 1, 0, self.store, self.ynab_client, "bid",
+            [self.category], [],
+        )
+        self.assertEqual(outcome, "categorized")
+        self.assertEqual(txn.category_id, "c-petrol")
+        # Payee resolved from merchant
+        self.assertEqual(txn.payee_id, "yn-spar")
+
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    @patch("builtins.input", return_value="f")
+    def test_user_picks_flush(self, _input, _stdout):
+        # Seed memory so an Enter-repeat would otherwise be offered.
+        self.store.set_merchant_memory(
+            self.merchant["id"],
+            categories_used={"c-petrol": 1},
+            last_processing={"amount_milliunits": -1000, "parent_memo": "",
+                             "splits": [{"category_id": "c-petrol",
+                                         "amount_milliunits": -1000, "memo": ""}]},
+        )
+        self.store = ConfigStore(self.path)
+        txn = self._txn(-3000)
+        outcome = _process_one_transaction(
+            txn, 1, 1, 3, self.store, self.ynab_client, "bid",
+            [self.category], [],
+        )
+        self.assertEqual(outcome, "flush")
+
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    @patch("builtins.input", return_value="")
+    def test_enter_replays_last_processing_when_amount_matches(self, _input, _stdout):
+        self.store.set_merchant_memory(
+            self.merchant["id"],
+            categories_used={"c-petrol": 1},
+            last_processing={"amount_milliunits": -3000, "parent_memo": "",
+                             "splits": [{"category_id": "c-petrol",
+                                         "amount_milliunits": -3000, "memo": ""}]},
+        )
+        self.store = ConfigStore(self.path)
+        txn = self._txn(-3000)
+        outcome = _process_one_transaction(
+            txn, 1, 1, 0, self.store, self.ynab_client, "bid",
+            [self.category], [],
+        )
+        self.assertEqual(outcome, "categorized")
+        self.assertEqual(txn.category_id, "c-petrol")
+
+
 if __name__ == "__main__":
     unittest.main()

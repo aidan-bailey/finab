@@ -470,6 +470,132 @@ def _update_merchant_memory(store: ConfigStore, merchant: dict, txn) -> None:
     )
 
 
+def _category_name(categories, category_id: str) -> Optional[str]:
+    for c in categories:
+        if c.id == category_id:
+            return c.name
+    return None
+
+
+def _process_one_transaction(
+    txn,
+    idx: int,
+    total: int,
+    unflushed_count: int,
+    store: ConfigStore,
+    ynab_client: YNABClient,
+    budget_id: str,
+    ynab_categories: list,
+    category_groups: list,
+) -> str:
+    """Drive the prompt loop for a single transaction.
+
+    Returns one of:
+      "categorized" — the transaction has been fully populated (caller
+                      should enqueue it).
+      "flush"       — user requested an immediate flush; caller should
+                      flush the queue and then re-call this function for
+                      the same transaction.
+    """
+    # --- (a) Positive amount: auto-inflow ---
+    if _is_inflow(txn):
+        inflow_id = _find_inflow_category(ynab_categories)
+        if inflow_id:
+            txn.category_id = inflow_id
+            txn.subtransactions = []
+            return "categorized"
+        # If we couldn't find an inflow category, fall through and let the
+        # user pick one manually like any other transaction.
+
+    # --- (b) Resolve merchant ---
+    merchant = None
+    fw_mid = getattr(txn, "merchant_id", None)
+    if fw_mid:
+        merchant = store.merchant_by_finwise_id(fw_mid)
+
+    # --- (c) Transfer: set payee, no category ---
+    if _is_transfer(merchant):
+        txn.payee_id = merchant["ynab"]["id"]
+        txn.payee_name = None
+        txn.category_id = None
+        txn.subtransactions = []
+        return "categorized"
+
+    # --- (d) No merchant: push uncategorized ---
+    if not merchant:
+        txn.category_id = None
+        txn.subtransactions = []
+        return "categorized"
+
+    # --- (e) Set payee from merchant ---
+    txn.payee_id = merchant["ynab"].get("id")
+    txn.payee_name = None
+
+    # --- (f) Interactive header + prompt ---
+    header = f" Transaction {idx} of {total} "
+    if unflushed_count:
+        header += f" ({unflushed_count} unflushed) "
+    bar = "━" * max(0, 60 - len(header))
+    print(f"\n{_cyan('━━━')}{_bold(_cyan(header))}{_cyan(bar)}")
+    print(f"  {_dim('Merchant:')}  {merchant.get('alias', '?')}")
+    print(f"  {_dim('Date:')}      {getattr(txn, 'date', '?')}")
+    amount_str = f"{txn.amount / 1000:.2f}"
+    print(f"  {_dim('Amount:')}    {amount_str}")
+    print(f"  {_dim('Memo:')}      {getattr(txn, 'memo', '') or _dim('(none)')}")
+
+    repeat_available = _can_repeat(merchant, txn)
+    if repeat_available:
+        lp = merchant["last_processing"]
+        if len(lp["splits"]) == 1:
+            cat_id = lp["splits"][0]["category_id"]
+            cat_name = _category_name(ynab_categories, cat_id) or "?"
+            preview = f"{cat_name} {amount_str}"
+        else:
+            preview = f"split into {len(lp['splits'])} categories"
+        print()
+        print(f"  {_bold('[Enter]')} to repeat last: {preview}")
+
+    print(f"  Or:")
+    print(f"    {_dim('s)')} Split into multiple categories")
+    print(f"    {_dim('c)')} Pick a category")
+    if unflushed_count:
+        print(f"    {_dim('f)')} Flush {unflushed_count} pending to YNAB")
+    print()
+
+    while True:
+        raw = input(_cyan("  > ")).strip().lower()
+        if raw == "" and repeat_available:
+            _apply_repeat(merchant, txn)
+            return "categorized"
+        if raw == "f" and unflushed_count:
+            return "flush"
+        if raw == "c":
+            cat_id = _pick_category(merchant, ynab_categories, category_groups, ynab_client, budget_id)
+            if cat_id is None:
+                # User backed out of the picker; re-show prompt.
+                continue
+            txn.category_id = cat_id
+            txn.subtransactions = []
+            txn.memo = _prompt_memo(getattr(txn, "memo", "") or "")
+            return "categorized"
+        if raw == "s":
+            subs = _collect_splits(txn, merchant, ynab_categories, category_groups, ynab_client, budget_id)
+            if subs is None:
+                continue
+            txn.subtransactions = [
+                {
+                    "category_id": s["category_id"],
+                    "amount": s["amount_milliunits"],
+                    "memo": s["memo"],
+                }
+                for s in subs
+            ]
+            txn.category_id = None
+            txn.memo = _prompt_memo(getattr(txn, "memo", "") or "")
+            return "categorized"
+        print(f"  Unrecognized: {raw!r}")
+
+
 def sync_transactions(
     fw_client: FinWiseClient,
     ynab_client: YNABClient,
