@@ -1,6 +1,12 @@
 import unittest
 from uuid import UUID
 from unittest.mock import MagicMock, patch
+import sys
+import importlib
+
+# Ensure finab.ynab_client is the real module (not mocked by test_hashing.py)
+if "finab.ynab_client" in sys.modules and isinstance(sys.modules["finab.ynab_client"], MagicMock):
+    del sys.modules["finab.ynab_client"]
 
 from finab.ynab_client import YNABClient
 
@@ -55,6 +61,46 @@ class TestCreateCategory(unittest.TestCase):
             self.assertEqual(result.id, cat_id)
         else:
             self.assertIsNotNone(result)
+
+
+class TestGetCategoryGroupsWithCategories(unittest.TestCase):
+    def test_returns_groups_with_nested_categories(self):
+        # Clean up test_hashing.py's sys.modules pollution
+        if "finab.ynab_client" in sys.modules and isinstance(sys.modules["finab.ynab_client"], MagicMock):
+            del sys.modules["finab.ynab_client"]
+            # Re-import to get the real module
+            import finab.ynab_client as ync_module
+            importlib.reload(ync_module)
+            # Update our local YNABClient reference
+            global YNABClient
+            YNABClient = ync_module.YNABClient
+
+        # Create category mocks
+        cat1 = MagicMock()
+        cat1.id = "c1"
+
+        grp1 = MagicMock()
+        grp1.id = "g1"
+        grp1.name = "Bills"
+        grp1.categories = [cat1]
+
+        # Create response mock
+        mock_response = MagicMock()
+        mock_response.data.category_groups = [grp1]
+
+        # Patch and set up
+        with patch("finab.ynab_client.CategoriesApi") as mock_api_cls:
+            # Set up the mock API instance
+            mock_api_instance = MagicMock()
+            mock_api_instance.get_categories.return_value = mock_response
+            mock_api_cls.return_value = mock_api_instance
+
+            client = YNABClient(api_key="test")
+            result = client.get_category_groups_with_categories("bid")
+
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0].name, "Bills")
+            self.assertEqual(result[0].categories[0].id, "c1")
 
 
 if __name__ == "__main__":

@@ -168,6 +168,13 @@ class YNABClient:
             all_categories.extend(group.categories)
         return all_categories
 
+    def get_category_groups_with_categories(self, budget_id: str) -> List[Any]:
+        """Returns category groups with nested categories (YNAB's native shape).
+        Used by the Phase 3 'pick from full list' UI."""
+        categories_api = CategoriesApi(self.api_client)
+        response = categories_api.get_categories(budget_id)
+        return response.data.category_groups
+
     def create_account(self, budget_id: str, account: Account) -> Any:
         """
         Creates a new account in a specific budget.
