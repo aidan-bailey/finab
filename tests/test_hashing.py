@@ -95,7 +95,7 @@ class TestHashingAndMatching(unittest.TestCase):
         ynab_txn.transfer_account_id = None
         ynab_txn.category_id = None  # Uncategorized
         ynab_txn.deleted = False
-        ynab_txn.date = date(2023, 1, 1)
+        ynab_txn.var_date = date(2023, 1, 1)  # New SDK uses var_date
         ynab_txn.amount = 1000
         ynab_txn.payee_name = "Test Payee"
 
@@ -127,7 +127,7 @@ class TestHashingAndMatching(unittest.TestCase):
         ynab_txn.transfer_account_id = None
         ynab_txn.category_id = None
         ynab_txn.deleted = False
-        ynab_txn.date = date(2023, 1, 1)  # Matches
+        ynab_txn.var_date = date(2023, 1, 1)  # Matches (new SDK uses var_date)
         ynab_txn.amount = 1000  # Matches
         ynab_txn.payee_name = "Test Payee"  # Matches
 
@@ -161,7 +161,7 @@ class TestHashingAndMatching(unittest.TestCase):
         ynab_txn.transfer_account_id = None
         ynab_txn.category_id = None
         ynab_txn.deleted = False
-        ynab_txn.date = date(2023, 1, 1)  # Matches
+        ynab_txn.var_date = date(2023, 1, 1)  # Matches (new SDK uses var_date)
         ynab_txn.amount = 2000  # Different
         ynab_txn.payee_name = "Test Payee"  # Matches
 

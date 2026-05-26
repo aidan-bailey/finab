@@ -183,7 +183,7 @@ class Transaction(BaseModel):
     def from_ynab(cls, txn: Any) -> "Transaction":
         return cls(
             account_id=txn.account_id,
-            date=txn.date,
+            date=txn.var_date,
             amount=txn.amount,
             payee_id=txn.payee_id,
             payee_name=txn.payee_name,

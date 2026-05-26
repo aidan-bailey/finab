@@ -507,7 +507,7 @@ def merge_and_filter_transactions(
             ynab_by_import_id[txn.import_id] = txn
 
         # Add to fuzzy key map for migration fallback
-        fuzzy_key = (txn.date, txn.amount, normalize_payee_for_matching(txn.payee_name))
+        fuzzy_key = (txn.var_date, txn.amount, normalize_payee_for_matching(txn.payee_name))
         if fuzzy_key not in ynab_by_fuzzy_key:
             ynab_by_fuzzy_key[fuzzy_key] = []
         ynab_by_fuzzy_key[fuzzy_key].append(txn)
