@@ -5,11 +5,11 @@ and the orchestration of fetch -> dedup -> categorize -> push.
 """
 import sys
 from datetime import date
-from typing import Any, Optional
+from typing import Optional
 
 from finab.client import FinWiseClient
 from finab.ynab_client import YNABClient
-from finab.store import ConfigStore, normalize_alias
+from finab.store import ConfigStore
 
 
 # Names YNAB might use for the inflow category. Checked in this order.
@@ -403,7 +403,9 @@ def _can_repeat(merchant: dict, txn) -> bool:
     lp = merchant.get("last_processing") if merchant else None
     if not lp:
         return False
-    return lp.get("amount_milliunits") == getattr(txn, "amount", None)
+    stored = lp.get("amount_milliunits")
+    current = getattr(txn, "amount", None)
+    return stored is not None and current is not None and stored == current
 
 
 def _apply_repeat(merchant: dict, txn) -> None:
@@ -676,11 +678,13 @@ def sync_transactions(
                 if merchant:
                     _update_merchant_memory(store, merchant, txn)
             idx += 1
+        # Normal end-of-loop: auto-flush whatever's pending.
+        if queue.count() > 0:
+            queue.flush(ynab_client, budget_id)
     except KeyboardInterrupt:
+        # User explicitly chose; respect their answer. Don't fall through to
+        # an unconditional finally that would re-flush.
         if queue.count() > 0:
             if _confirm(f"\nFlush {queue.count()} pending transactions before exit? [Y/n]: "):
                 queue.flush(ynab_client, budget_id)
         raise
-    finally:
-        if queue.count() > 0:
-            queue.flush(ynab_client, budget_id)
