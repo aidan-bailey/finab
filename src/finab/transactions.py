@@ -271,6 +271,16 @@ def _create_new_category(
     return new_cat.id
 
 
+def _prompt_memo(default: str = "") -> str:
+    """Prompt for a memo. Press Enter to keep `default`. Strips whitespace."""
+    if default:
+        shown = f"  Memo (Enter to keep '{default}'): "
+    else:
+        shown = "  Memo (Enter for none): "
+    raw = input(shown).strip()
+    return raw if raw else default
+
+
 class _PendingQueue:
     """Holds categorized-but-not-yet-pushed transactions. Flushed on demand
     via the `f` command, at end of run, or after Ctrl+C confirmation."""

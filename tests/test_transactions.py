@@ -311,5 +311,26 @@ class TestCreateNewCategory(unittest.TestCase):
         self.assertIsNone(result)
 
 
+from finab.transactions import _prompt_memo
+
+
+class TestPromptMemo(unittest.TestCase):
+    @patch("builtins.input", return_value="")
+    def test_empty_uses_default(self, _input):
+        self.assertEqual(_prompt_memo("default note"), "default note")
+
+    @patch("builtins.input", return_value="")
+    def test_empty_default_returns_empty(self, _input):
+        self.assertEqual(_prompt_memo(""), "")
+
+    @patch("builtins.input", return_value="custom note")
+    def test_typed_value_replaces_default(self, _input):
+        self.assertEqual(_prompt_memo("default note"), "custom note")
+
+    @patch("builtins.input", return_value="  spaced  ")
+    def test_strips_whitespace(self, _input):
+        self.assertEqual(_prompt_memo(""), "spaced")
+
+
 if __name__ == "__main__":
     unittest.main()
