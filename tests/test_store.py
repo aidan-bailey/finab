@@ -229,5 +229,34 @@ class TestRefreshRecords(unittest.TestCase):
         store.refresh_records(fw_accounts=[FakeFW()])
 
 
+class TestSetMerchantMemory(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmpdir.name) / "config.json"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_set_merchant_memory_writes_both_fields(self):
+        store = ConfigStore(self.path)
+        m = store.add_merchant(
+            alias="Spar",
+            fw_record={"id": "fw-spar", "name": "Spar"},
+            ynab_record={"id": "yn-spar", "name": "Spar"},
+        )
+        cu = {"cat-1": 5, "cat-2": 1}
+        lp = {
+            "amount_milliunits": -10000,
+            "parent_memo": "supermarket",
+            "splits": [{"category_id": "cat-1", "amount_milliunits": -10000, "memo": ""}],
+        }
+        store.set_merchant_memory(m["id"], categories_used=cu, last_processing=lp)
+
+        store2 = ConfigStore(self.path)
+        found = store2.merchant_by_finwise_id("fw-spar")
+        self.assertEqual(found["categories_used"], cu)
+        self.assertEqual(found["last_processing"], lp)
+
+
 if __name__ == "__main__":
     unittest.main()

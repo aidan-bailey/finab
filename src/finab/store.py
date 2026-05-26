@@ -154,6 +154,19 @@ class ConfigStore:
         self._rebuild_indexes()
         self._save()
 
+    def set_merchant_memory(
+        self,
+        merchant_id: str,
+        categories_used: dict,
+        last_processing: dict,
+    ) -> None:
+        """Write the per-merchant categorization memory atomically."""
+        m = self._data["merchants"][merchant_id]
+        m["categories_used"] = dict(categories_used)
+        m["last_processing"] = dict(last_processing)
+        self._rebuild_indexes()
+        self._save()
+
     def refresh_records(
         self,
         fw_accounts=None,
