@@ -1318,10 +1318,15 @@ def main():
                 save_budget_id(budget_id)
 
         if budget_id:
-            # Sync Accounts
-            sync_accounts(fw_client, ynab_client, budget_id)
+            store = ConfigStore()
 
-            # Sync Transactions
+            # Phase 1
+            sync_accounts(fw_client, ynab_client, budget_id, store)
+
+            # Phase 2
+            sync_merchants(fw_client, ynab_client, budget_id, store)
+
+            # Phase 3 (existing transaction pipeline, unchanged)
             sync_transactions(fw_client, ynab_client, budget_id)
 
     except Exception as e:
