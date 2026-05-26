@@ -91,5 +91,68 @@ class TestConfigStoreAccounts(unittest.TestCase):
         )
 
 
+class TestConfigStoreMerchants(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmpdir.name) / "config.json"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_add_merchant_keeps_finwise_as_dict_keyed_by_fw_id(self):
+        store = ConfigStore(self.path)
+        fw = {"id": "fw-m-1", "name": "Spar"}
+        yn = {"id": "yn-p-1", "name": "Spar"}
+
+        m = store.add_merchant(alias="Spar", fw_record=fw, ynab_record=yn)
+
+        self.assertEqual(m["alias"], "Spar")
+        self.assertEqual(m["finwise"], {"fw-m-1": fw})
+        self.assertEqual(m["ynab"], yn)
+
+    def test_merchant_by_finwise_id_finds_any_finwise_child(self):
+        store = ConfigStore(self.path)
+        fw_a = {"id": "fw-m-A", "name": "Easy Equities"}
+        fw_b = {"id": "fw-m-B", "name": "Easy Equities"}
+        yn = {"id": "yn-p-EE", "name": "Easy Equities"}
+
+        m = store.add_merchant(alias="Easy Equities", fw_record=fw_a, ynab_record=yn)
+        store.attach_finwise_to_merchant(m["id"], fw_b)
+
+        self.assertEqual(store.merchant_by_finwise_id("fw-m-A")["id"], m["id"])
+        self.assertEqual(store.merchant_by_finwise_id("fw-m-B")["id"], m["id"])
+
+    def test_merchant_by_alias_normalizes_lookup(self):
+        store = ConfigStore(self.path)
+        store.add_merchant(
+            alias="Pick n Pay",
+            fw_record={"id": "fw-pnp", "name": "PnP"},
+            ynab_record={"id": "yn-pnp", "name": "Pick n Pay"},
+        )
+
+        # Exact match
+        self.assertIsNotNone(store.merchant_by_alias("Pick n Pay"))
+        # Lowercased + whitespace tolerant
+        self.assertIsNotNone(store.merchant_by_alias("  pick n pay  "))
+        # Different alias misses
+        self.assertIsNone(store.merchant_by_alias("Checkers"))
+
+    def test_attach_finwise_to_merchant_persists(self):
+        store = ConfigStore(self.path)
+        m = store.add_merchant(
+            alias="Shell",
+            fw_record={"id": "fw-shell-1", "name": "Shell"},
+            ynab_record={"id": "yn-shell", "name": "Shell"},
+        )
+        store.attach_finwise_to_merchant(m["id"], {"id": "fw-shell-2", "name": "Shell"})
+
+        # Reload from disk to ensure persistence
+        store2 = ConfigStore(self.path)
+        m2 = store2.merchant_by_finwise_id("fw-shell-2")
+        self.assertEqual(m2["id"], m["id"])
+        self.assertIn("fw-shell-1", m2["finwise"])
+        self.assertIn("fw-shell-2", m2["finwise"])
+
+
 if __name__ == "__main__":
     unittest.main()

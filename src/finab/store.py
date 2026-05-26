@@ -75,3 +75,35 @@ class ConfigStore:
         if not internal_id:
             return None
         return self._data["accounts"][internal_id]
+
+    def add_merchant(self, alias: str, fw_record: dict, ynab_record: dict) -> dict:
+        internal_id = str(uuid.uuid4())
+        fw_id = fw_record["id"]
+        merchant = {
+            "id": internal_id,
+            "alias": alias,
+            "finwise": {fw_id: dict(fw_record)},
+            "ynab": dict(ynab_record),
+        }
+        self._data["merchants"][internal_id] = merchant
+        self._rebuild_indexes()
+        self._save()
+        return merchant
+
+    def attach_finwise_to_merchant(self, merchant_id: str, fw_record: dict) -> None:
+        merchant = self._data["merchants"][merchant_id]
+        merchant["finwise"][fw_record["id"]] = dict(fw_record)
+        self._rebuild_indexes()
+        self._save()
+
+    def merchant_by_finwise_id(self, fw_id: str) -> Optional[dict]:
+        internal_id = self._fw_merchant_index.get(fw_id)
+        if not internal_id:
+            return None
+        return self._data["merchants"][internal_id]
+
+    def merchant_by_alias(self, alias: str) -> Optional[dict]:
+        internal_id = self._alias_merchant_index.get(_normalize_alias(alias))
+        if not internal_id:
+            return None
+        return self._data["merchants"][internal_id]
