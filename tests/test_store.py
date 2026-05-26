@@ -170,11 +170,14 @@ class TestRefreshRecords(unittest.TestCase):
             ynab_record={"id": "yn-A", "name": "A"},
         )
 
-        # Build a fake FinWise account with updated fields
+        # Build a fake FinWise account matching the real internal Account
+        # model's attribute shape (finwise_id, plus the curated fields).
         class FakeFW:
-            id = "fw-A"
-            def dict(self):
-                return {"id": "fw-A", "name": "New Name", "balance": 200}
+            finwise_id = "fw-A"
+            name = "New Name"
+            type = "checking"
+            balance = 200
+            currency_code = "ZAR"
 
         store.refresh_records(fw_accounts=[FakeFW()])
 
@@ -204,9 +207,11 @@ class TestRefreshRecords(unittest.TestCase):
         store = ConfigStore(self.path)
 
         class FakeFW:
-            id = "fw-unknown"
-            def dict(self):
-                return {"id": "fw-unknown"}
+            finwise_id = "fw-unknown"
+            name = "Unknown"
+            type = "checking"
+            balance = 0
+            currency_code = "ZAR"
 
         # Should not raise even though no account is linked
         store.refresh_records(fw_accounts=[FakeFW()])

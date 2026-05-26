@@ -13,10 +13,20 @@ def normalize_alias(alias: str) -> str:
 
 
 def to_dict(obj) -> dict:
-    """Convert a pydantic-like or dataclass-like object to a plain dict."""
+    """Convert a pydantic-like or dataclass-like object to a plain dict.
+
+    For pydantic v2 models, uses `mode="json"` so UUID / datetime / Decimal
+    fields come out as JSON-safe primitives (strings, etc.) — matching what
+    they'd look like after a round-trip through `json.dump`.
+    """
     if isinstance(obj, dict):
         return obj
-    for method_name in ("model_dump", "to_dict", "dict"):
+    if hasattr(obj, "model_dump"):
+        try:
+            return obj.model_dump(mode="json")
+        except TypeError:
+            return obj.model_dump()
+    for method_name in ("to_dict", "dict"):
         method = getattr(obj, method_name, None)
         if callable(method):
             return method()
@@ -126,30 +136,61 @@ class ConfigStore:
         ynab_accounts=None,
         ynab_payees=None,
     ) -> None:
-        """Overwrite cached finwise/ynab sub-records with freshly fetched data."""
+        """Overwrite cached finwise/ynab sub-records with freshly fetched data.
+
+        Stored sub-records use a curated shape: `{"id": <fw_id_or_yn_id>,
+        "name": ..., ...}`. The internal Account model carries the FinWise id
+        as `finwise_id` and the YNAB id as `ynab_id`, so we rebuild the
+        curated dicts explicitly rather than blindly serializing the whole
+        model (which would produce the wrong key names).
+        """
         changed = False
 
         if fw_accounts:
             for fw in fw_accounts:
-                acc = self.account_by_finwise_id(fw.id)
+                fw_id = getattr(fw, "finwise_id", None) or getattr(fw, "id", None)
+                if not fw_id:
+                    continue
+                acc = self.account_by_finwise_id(fw_id)
                 if acc:
-                    acc["finwise"] = to_dict(fw)
+                    acc["finwise"] = {
+                        "id": fw_id,
+                        "name": getattr(fw, "name", None),
+                        "type": getattr(fw, "type", None),
+                        "balance": getattr(fw, "balance", None),
+                        "currency_code": getattr(fw, "currency_code", None),
+                    }
                     changed = True
 
         if ynab_accounts:
-            yn_by_id = {y.ynab_id or y.id: y for y in ynab_accounts}
+            yn_by_id: dict[str, Any] = {}
+            for y in ynab_accounts:
+                yid = getattr(y, "ynab_id", None) or getattr(y, "id", None)
+                if yid is not None:
+                    yn_by_id[str(yid)] = y
             for acc in self.accounts():
                 yn_id = acc["ynab"].get("id")
-                if yn_id and yn_id in yn_by_id:
-                    acc["ynab"] = to_dict(yn_by_id[yn_id])
+                if yn_id and str(yn_id) in yn_by_id:
+                    y = yn_by_id[str(yn_id)]
+                    acc["ynab"] = {
+                        "id": str(getattr(y, "ynab_id", None) or getattr(y, "id", "")),
+                        "name": getattr(y, "name", None),
+                        "type": getattr(y, "type", None),
+                        "balance": getattr(y, "balance", None),
+                        "transfer_payee_id": (
+                            str(y.transfer_payee_id)
+                            if getattr(y, "transfer_payee_id", None) is not None
+                            else None
+                        ),
+                    }
                     changed = True
 
         if ynab_payees:
-            yn_by_id = {p.id: p for p in ynab_payees}
+            yn_by_id = {str(p.id): p for p in ynab_payees if getattr(p, "id", None) is not None}
             for m in self.merchants():
                 yn_id = m["ynab"].get("id")
-                if yn_id and yn_id in yn_by_id:
-                    m["ynab"] = to_dict(yn_by_id[yn_id])
+                if yn_id and str(yn_id) in yn_by_id:
+                    m["ynab"] = to_dict(yn_by_id[str(yn_id)])
                     changed = True
 
         if changed:
