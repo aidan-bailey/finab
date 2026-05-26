@@ -383,10 +383,12 @@ class _PendingQueue:
         if both succeed (queue clears). On any exception, returns False and
         keeps the queue for retry."""
         try:
-            if self.creates:
-                ynab_client.create_transactions(budget_id, self.creates)
-            if self.updates:
-                ynab_client.update_transactions(budget_id, self.updates)
+            creates_snap = list(self.creates)
+            updates_snap = list(self.updates)
+            if creates_snap:
+                ynab_client.create_transactions(budget_id, creates_snap)
+            if updates_snap:
+                ynab_client.update_transactions(budget_id, updates_snap)
             self.creates.clear()
             self.updates.clear()
             return True
@@ -596,11 +598,89 @@ def _process_one_transaction(
         print(f"  Unrecognized: {raw!r}")
 
 
+def _sort_key(store: ConfigStore):
+    """Sort candidates by (merchant_alias, date_asc). Unknown-merchant
+    transactions sort to the end."""
+    def key(txn):
+        mid = getattr(txn, "merchant_id", None)
+        merchant = store.merchant_by_finwise_id(mid) if mid else None
+        alias = merchant["alias"].lower() if merchant else "￿"
+        d = getattr(txn, "date", None)
+        return (alias, d if d is not None else date.max)
+    return key
+
+
+def _confirm(prompt: str) -> bool:
+    """Yes/no prompt. Default Yes (empty -> True)."""
+    raw = input(prompt).strip().lower()
+    return raw in ("", "y", "yes")
+
+
 def sync_transactions(
     fw_client: FinWiseClient,
     ynab_client: YNABClient,
     budget_id: str,
     store: ConfigStore,
 ) -> None:
-    """Phase 3 entry point. Stub for now; populated by later tasks."""
-    raise NotImplementedError("sync_transactions wired in later tasks")
+    """Phase 3 orchestrator. Fetches all transactions, dedupes, and walks
+    the user through categorizing each non-auto-handled transaction.
+    Pushes via the _PendingQueue (manual 'f' flush, auto-flush at end,
+    Ctrl+C asks before flushing)."""
+    print("\n--- Transaction Sync ---")
+
+    try:
+        fw_txns = fw_client.get_transactions()
+    except Exception as e:
+        print(f"Failed to fetch FinWise transactions: {e}")
+        return
+
+    try:
+        ynab_txns = ynab_client.get_transactions(budget_id)
+    except Exception as e:
+        print(f"Failed to fetch YNAB transactions: {e}")
+        return
+
+    try:
+        ynab_categories = ynab_client.get_categories(budget_id)
+    except Exception as e:
+        print(f"Failed to fetch YNAB categories: {e}")
+        ynab_categories = []
+
+    try:
+        category_groups = ynab_client.get_category_groups_with_categories(budget_id)
+    except Exception as e:
+        print(f"Failed to fetch YNAB category groups: {e}")
+        category_groups = []
+
+    candidates = merge_and_filter_transactions(fw_txns, ynab_txns, store)
+    candidates.sort(key=_sort_key(store))
+    total = len(candidates)
+    print(f"Transactions to process: {_yellow(str(total))}")
+
+    queue = _PendingQueue()
+    try:
+        idx = 0
+        while idx < total:
+            txn = candidates[idx]
+            outcome = _process_one_transaction(
+                txn, idx + 1, total, queue.count(),
+                store, ynab_client, budget_id,
+                ynab_categories, category_groups,
+            )
+            if outcome == "flush":
+                queue.flush(ynab_client, budget_id)
+                continue   # re-process the same transaction
+            if outcome == "categorized":
+                queue.add(txn)
+                merchant = store.merchant_by_finwise_id(getattr(txn, "merchant_id", None))
+                if merchant:
+                    _update_merchant_memory(store, merchant, txn)
+            idx += 1
+    except KeyboardInterrupt:
+        if queue.count() > 0:
+            if _confirm(f"\nFlush {queue.count()} pending transactions before exit? [Y/n]: "):
+                queue.flush(ynab_client, budget_id)
+        raise
+    finally:
+        if queue.count() > 0:
+            queue.flush(ynab_client, budget_id)

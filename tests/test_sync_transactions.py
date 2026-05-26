@@ -1,98 +1,118 @@
-import tempfile
 import unittest
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from datetime import date
-import sys
-import os
 
-# Adjust path to find finab source if running from root
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../src")))
-
-from finab.main import sync_transactions
 from finab.store import ConfigStore
+from finab.transactions import sync_transactions
 
 
-class TestSyncTransactions(unittest.TestCase):
-    @patch("finab.main.load_aliases")
-    @patch("finab.main.load_payee_rules")
-    @patch("finab.main.load_merchant_aliases")
-    @patch("finab.main.load_category_rules")
-    @patch("finab.main.load_import_id_offset")
-    @patch("builtins.print")
-    @patch("builtins.input")
-    def test_sync_transactions_flow(
-        self,
-        mock_input,
-        mock_print,
-        mock_offset,
-        mock_cat_rules,
-        mock_merch_aliases,
-        mock_payee_rules,
-        mock_aliases,
-    ):
-        # Setup Mocks
-        mock_aliases.return_value = {}
-        mock_payee_rules.return_value = []
-        mock_merch_aliases.return_value = {}
-        mock_cat_rules.return_value = {}
-        mock_offset.return_value = "finab_offset_v1"
-        mock_input.return_value = ""  # Default to empty input (skip/ignore)
+class TestSyncTransactionsIntegration(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmpdir.name) / "config.json"
+        self.store = ConfigStore(self.path)
+        # Seed accounts and merchants for a complete run.
+        self.store.add_account(
+            alias="Checking",
+            fw_record={"id": "fw-acc"},
+            ynab_record={"id": "yn-acc", "transfer_payee_id": "tp-1"},
+        )
+        self.store.add_merchant(
+            alias="Spar",
+            fw_record={"id": "fw-spar", "name": "Spar"},
+            ynab_record={"id": "yn-spar", "name": "Spar"},
+        )
+        self.store = ConfigStore(self.path)
 
-        # Clients
-        mock_fw_client = MagicMock()
-        mock_ynab_client = MagicMock()
-        budget_id = "test-budget"
+        self.fw_client = MagicMock()
+        self.ynab_client = MagicMock()
 
-        # Data
-        # Accounts
-        fw_acc = MagicMock()
-        fw_acc.finwise_id = "fw-1"
-        fw_acc.name = "Bank"
-        mock_fw_client.get_accounts.return_value = [fw_acc]
+    def tearDown(self):
+        self.tmpdir.cleanup()
 
-        ynab_acc = MagicMock()
-        ynab_acc.ynab_id = "ynab-1"
-        ynab_acc.name = "Bank"
-        ynab_acc.transfer_payee_id = "transfer-payee-1"
-        mock_ynab_client.get_accounts.return_value = [ynab_acc]
+    def _fw_txn(self, import_id, account_id, amount, merchant_id, memo=""):
+        from datetime import date
+        t = MagicMock()
+        t.import_id = import_id
+        t.account_id = account_id
+        t.amount = amount
+        t.merchant_id = merchant_id
+        t.date = date(2026, 5, 20)
+        t.memo = memo
+        t.subtransactions = []
+        t.payee_id = None
+        t.payee_name = None
+        t.category_id = None
+        t.ynab_id = None
+        return t
 
-        # Categories & Payees
-        mock_ynab_client.get_categories.return_value = []
-        mock_ynab_client.get_payees.return_value = []
+    def _category(self, cid, name, hidden=False, deleted=False):
+        c = MagicMock(id=cid, hidden=hidden, deleted=deleted)
+        c.name = name
+        return c
 
-        # Transactions
-        # A transaction that needs to be synced
-        fw_txn = MagicMock()
-        fw_txn.account_id = "fw-1"
-        fw_txn.date = date(2023, 1, 1)
-        fw_txn.amount = -1000
-        fw_txn.payee_name = "Shop"
-        fw_txn.memo = "Shop Purchase"
-        fw_txn.merchant_id = None
-        fw_txn.import_id = "import-1"
-        fw_txn.category_id = None
-        fw_txn.payee_id = None
-        fw_txn.ynab_id = None
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    @patch("builtins.input", side_effect=["c", "1", ""])
+    def test_full_flow_pushes_at_end(self, _input, _stdout):
+        # One outflow transaction
+        self.fw_client.get_transactions.return_value = [
+            self._fw_txn("fw-tx-1", "fw-acc", -5000, "fw-spar", memo="purchase"),
+        ]
+        self.ynab_client.get_transactions.return_value = []
+        # One eligible category, also used to seed picker
+        cat = self._category("c-groceries", "Groceries")
+        self.ynab_client.get_categories.return_value = [cat]
+        self.ynab_client.get_category_groups_with_categories.return_value = []
+        # Seed merchant memory so the picker shows the used category
+        m = self.store.merchant_by_finwise_id("fw-spar")
+        self.store.set_merchant_memory(
+            m["id"],
+            categories_used={"c-groceries": 1},
+            last_processing={"amount_milliunits": -9999, "parent_memo": "",
+                             "splits": [{"category_id": "c-groceries",
+                                         "amount_milliunits": -9999, "memo": ""}]},
+        )
+        self.store = ConfigStore(self.path)
 
-        mock_fw_client.get_transactions.return_value = [fw_txn]
-        mock_ynab_client.get_transactions.return_value = []  # No existing txns
+        sync_transactions(self.fw_client, self.ynab_client, "bid", self.store)
 
-        # Run
-        with tempfile.TemporaryDirectory() as tmpdir:
-            store = ConfigStore(path=Path(tmpdir) / "config.json")
-            sync_transactions(mock_fw_client, mock_ynab_client, budget_id, store)
+        # Auto-flush at end should have pushed.
+        self.ynab_client.create_transactions.assert_called_once()
+        # Memory got updated.
+        m2 = self.store.merchant_by_finwise_id("fw-spar")
+        self.assertEqual(m2["categories_used"]["c-groceries"], 2)
 
-        # Verify
-        # Should call create_transactions
-        mock_ynab_client.create_transactions.assert_called_once()
-        call_args = mock_ynab_client.create_transactions.call_args
-        self.assertEqual(call_args[0][0], budget_id)
-        txns_to_create = call_args[0][1]
-        self.assertEqual(len(txns_to_create), 1)
-        self.assertEqual(txns_to_create[0].account_id, "ynab-1")  # mapped ID
-        # The payee name might be truncated or processed, but should be "Shop" here
-        self.assertEqual(txns_to_create[0].payee_name, "Shop")
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    @patch("builtins.input", side_effect=[])
+    def test_positive_amount_auto_inflows(self, _input, _stdout):
+        self.fw_client.get_transactions.return_value = [
+            self._fw_txn("fw-tx-1", "fw-acc", 10000, "fw-spar"),
+        ]
+        self.ynab_client.get_transactions.return_value = []
+        inflow = self._category("c-inflow", "Inflow: Ready to Assign")
+        self.ynab_client.get_categories.return_value = [inflow]
+        self.ynab_client.get_category_groups_with_categories.return_value = []
+
+        sync_transactions(self.fw_client, self.ynab_client, "bid", self.store)
+
+        self.ynab_client.create_transactions.assert_called_once()
+        args = self.ynab_client.create_transactions.call_args
+        pushed = args.args[1]
+        self.assertEqual(pushed[0].category_id, "c-inflow")
+
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    @patch("builtins.input", side_effect=[])
+    def test_no_transactions_to_process(self, _input, _stdout):
+        self.fw_client.get_transactions.return_value = []
+        self.ynab_client.get_transactions.return_value = []
+        self.ynab_client.get_categories.return_value = []
+        self.ynab_client.get_category_groups_with_categories.return_value = []
+
+        # Should not raise; should not push anything.
+        sync_transactions(self.fw_client, self.ynab_client, "bid", self.store)
+        self.ynab_client.create_transactions.assert_not_called()
+        self.ynab_client.update_transactions.assert_not_called()
 
 
 if __name__ == "__main__":
