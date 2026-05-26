@@ -56,6 +56,41 @@ class TestSyncMerchants(unittest.TestCase):
         p.model_dump.return_value = {"id": id, "name": name}
         return p
 
+    @patch("finab.main.input", create=True, return_value="Pre-Existing")
+    def test_seeds_ynab_payees_and_attaches_finwise(self, _input):
+        """Regular YNAB payees get seeded as YNAB-only merchants in the store
+        before FinWise processing. A FinWise merchant aliased to one of them
+        gets attached, not duplicated."""
+        regular = self._ynab_payee("yn-existing", "Pre-Existing")
+        # A transfer payee (transfer_account_id set) should NOT be seeded
+        transfer = self._ynab_payee("yn-transfer", "Transfer: Some Account")
+        transfer.transfer_account_id = "yn-some-account"
+        # A deleted payee should NOT be seeded
+        deleted = self._ynab_payee("yn-deleted", "Old Payee")
+        deleted.deleted = True
+        # Make the non-transfer payees report transfer_account_id=None correctly
+        regular.transfer_account_id = None
+        regular.deleted = False
+
+        self.fw_client.get_transactions.return_value = [self._fw_txn("fw-x", "X")]
+        self.ynab_client.get_payees.return_value = [regular, transfer, deleted]
+
+        from finab.main import sync_merchants
+        sync_merchants(self.fw_client, self.ynab_client, "bid", self.store)
+
+        # The regular payee was seeded
+        seeded = self.store.merchant_by_ynab_id("yn-existing")
+        self.assertIsNotNone(seeded)
+        # The FinWise merchant was attached to the seeded entry, not created anew
+        attached = self.store.merchant_by_finwise_id("fw-x")
+        self.assertIsNotNone(attached)
+        self.assertEqual(attached["id"], seeded["id"])
+        self.assertEqual(attached["alias"], "Pre-Existing")
+        # Transfer and deleted payees were skipped
+        self.assertIsNone(self.store.merchant_by_ynab_id("yn-transfer"))
+        self.assertIsNone(self.store.merchant_by_ynab_id("yn-deleted"))
+        self.ynab_client.create_payee.assert_not_called()
+
     @patch("finab.main.input", create=True, return_value="Discovery Bank ZAR")
     def test_links_to_transfer_payee_when_alias_matches_own_account(self, _input):
         # Account in the store with a known transfer_payee_id

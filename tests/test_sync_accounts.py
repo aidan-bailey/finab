@@ -81,6 +81,31 @@ class TestSyncAccounts(unittest.TestCase):
         self.assertEqual(linked["alias"], "My Checking")
         self.assertEqual(linked["ynab"]["id"], "yn-1")
 
+    @patch("finab.main.input", create=True, return_value="My Checking")
+    def test_seeds_ynab_only_accounts_and_attaches_finwise(self, _input):
+        """YNAB accounts with no FinWise correspondent get seeded into the
+        store. A FinWise account aliased to one of them gets attached, not
+        duplicated, and no new YNAB account is created."""
+        ynab_only = self._ynab_account("yn-only", "Other Account")
+        ynab_match = self._ynab_account("yn-1", "My Checking")
+        self.fw_client.get_accounts.return_value = [self._fw_account("fw-1", "Checking")]
+        self.ynab_client.get_accounts.return_value = [ynab_only, ynab_match]
+        self.fw_client.get_transactions.return_value = []
+
+        from finab.main import sync_accounts
+        sync_accounts(self.fw_client, self.ynab_client, "bid", self.store)
+
+        seeded = self.store.account_by_ynab_id("yn-only")
+        self.assertIsNotNone(seeded)
+        self.assertEqual(seeded["alias"], "Other Account")
+        self.assertEqual(seeded["finwise"], {})
+
+        linked = self.store.account_by_finwise_id("fw-1")
+        self.assertIsNotNone(linked)
+        self.assertEqual(linked["alias"], "My Checking")
+        self.assertEqual(linked["ynab"]["id"], "yn-1")
+        self.ynab_client.create_account.assert_not_called()
+
     @patch("finab.main.input", create=True, return_value="Brand New Account")
     def test_creates_ynab_account_when_no_match(self, _input):
         self.fw_client.get_accounts.return_value = [self._fw_account("fw-1", "Checking")]
