@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 CONFIG_FILE = Path("config.json")
+CACHE_FILE = Path("cache.json")
 
 
 def _load_data() -> Dict[str, Any]:
@@ -111,3 +112,33 @@ def save_import_id_offset(offset: str) -> None:
     if "salt" in data:
         del data["salt"]
     _save_data(data)
+
+
+def load_cache() -> Dict[str, Dict[str, Any]]:
+    """Loads in-progress categorization decisions from cache.json."""
+    if not CACHE_FILE.exists():
+        return {}
+    try:
+        with open(CACHE_FILE, "r") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        return {}
+
+
+def save_cache(cache: Dict[str, Dict[str, Any]]) -> None:
+    """Saves the categorization cache to cache.json.
+
+    An empty cache removes the file entirely, so we don't leave behind a stale
+    empty cache between runs.
+    """
+    if not cache:
+        clear_cache()
+        return
+    with open(CACHE_FILE, "w") as f:
+        json.dump(cache, f, indent=4, default=str)
+
+
+def clear_cache() -> None:
+    """Deletes the cache file once changes have been pushed to YNAB."""
+    if CACHE_FILE.exists():
+        CACHE_FILE.unlink()

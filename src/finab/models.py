@@ -40,7 +40,7 @@ class FinWiseTransaction(BaseModel):
     original_transaction_category_id: Optional[str] = Field(
         None, alias="originalTransactionCategoryId"
     )
-    merchant_id: Optional[str] = Field(None, alias="merchantId")
+    merchant_id: str = Field(alias="merchantId")
     merchant_name: Optional[str] = Field(None, alias="merchantName")
     original_merchant_id: Optional[str] = Field(None, alias="originalMerchantId")
     user_id: str = Field(alias="userId")

@@ -20,6 +20,9 @@ from finab.config import (
     load_budget_id,
     save_budget_id,
     load_import_id_offset,
+    load_cache,
+    save_cache,
+    clear_cache,
 )
 import random
 import string
@@ -589,6 +592,52 @@ def merge_and_filter_transactions(
     return transactions_to_process
 
 
+def _build_cache(transactions):
+    """Serialize per-transaction decisions to a cache-friendly dict, keyed by
+    import_id. Only transactions with a recorded decision are included."""
+    cache = {}
+    for txn in transactions:
+        if not txn.import_id:
+            continue
+        entry = {}
+        if txn.category_id is not None:
+            entry["category_id"] = txn.category_id
+        if txn.subtransactions:
+            entry["subtransactions"] = txn.subtransactions
+        if txn.payee_id is not None:
+            entry["payee_id"] = txn.payee_id
+            entry["payee_name"] = txn.payee_name
+        if entry:
+            cache[txn.import_id] = entry
+    return cache
+
+
+def _apply_cache(transactions):
+    """Restore prior decisions from cache.json onto the current transaction
+    list. Runs after process_payee_aliases so cached transfer markings
+    (payee_name=None) survive alias re-application."""
+    cache = load_cache()
+    if not cache:
+        return
+    restored = 0
+    for txn in transactions:
+        if not txn.import_id:
+            continue
+        entry = cache.get(txn.import_id)
+        if not entry:
+            continue
+        if "category_id" in entry:
+            txn.category_id = entry["category_id"]
+        if "subtransactions" in entry:
+            txn.subtransactions = entry["subtransactions"]
+        if "payee_id" in entry:
+            txn.payee_id = entry["payee_id"]
+            txn.payee_name = entry.get("payee_name")
+        restored += 1
+    if restored:
+        print(f"Restored {restored} cached decision(s) from previous run.")
+
+
 def collect_split_subtransactions(fw_txn, ynab_category_map):
     """
     Walk the user through splitting a transaction across multiple categories.
@@ -696,8 +745,16 @@ def process_categories(
 
     if ynab_category_map:
         for fw_txn in transactions_to_process:
-            # Skip if already has a category (shouldn't happen, but safety check)
-            if fw_txn.category_id:
+            # Persist all decisions made up to this point so an abort here
+            # doesn't lose work from earlier iterations.
+            save_cache(_build_cache(transactions_to_process))
+
+            # Skip transactions that already have a decision: a category, a
+            # split, or a transfer marking restored from cache or set by a
+            # previous step.
+            if fw_txn.category_id or fw_txn.subtransactions:
+                continue
+            if fw_txn.payee_id in transfer_payee_ids:
                 continue
 
             # Use original description (memo) for matching
@@ -765,6 +822,8 @@ def process_categories(
             if fw_txn.original_description and fw_txn.original_description != description:
                 print(f"Original Description: {fw_txn.original_description}")
             print(f"Payee: {fw_txn.payee_name}")  # Show resolved payee
+            if fw_txn.merchant_id:
+                print(f"Merchant ID: {fw_txn.merchant_id}")
 
             # Show if this is an existing YNAB transaction
             if fw_txn.ynab_id:
@@ -778,7 +837,7 @@ def process_categories(
                 if confirmation_needed and suggested_category_name:
                     prompt_text = f"Enter Category Name (Press Enter to confirm '{suggested_category_name}', "
 
-                prompt_text += "'r' to reload, 'i' Inflow, 't' Transfer, 'o' One-off, 'c' Confirm-Rule, 's' Split): "
+                prompt_text += "'r' to reload, 'i' Inflow, 't' Transfer, 'o' One-off, 'c' Confirm-Rule, 's' Split, 'p' Payee): "
 
                 cat_input = input(prompt_text).strip()
 
@@ -859,6 +918,34 @@ def process_categories(
                             f"Transaction split into {len(subs)} sub-transaction(s)."
                         )
                         break
+                    continue
+
+                if cat_input.lower() == "p":
+                    # Assign a payee name to this transaction's merchant_id
+                    if not fw_txn.merchant_id:
+                        print(
+                            "No merchant_id on this transaction; cannot save a merchant alias."
+                        )
+                        continue
+
+                    new_payee = input(
+                        f"Enter payee name for merchant_id '{fw_txn.merchant_id}' (Enter to cancel): "
+                    ).strip()
+                    if not new_payee:
+                        print("Cancelled.")
+                        continue
+
+                    merchant_aliases = load_merchant_aliases()
+                    merchant_aliases[fw_txn.merchant_id] = new_payee
+                    save_merchant_aliases(merchant_aliases)
+
+                    fw_txn.payee_name = new_payee
+                    # Clear any prior transfer marking so the new payee sticks
+                    fw_txn.payee_id = None
+                    print(
+                        f"Merchant alias saved: {fw_txn.merchant_id} -> '{new_payee}'"
+                    )
+                    print(f"Payee: {fw_txn.payee_name}")
                     continue
 
                 if cat_input.lower() == "t":
@@ -978,7 +1065,12 @@ def process_categories(
 
 
 def sync_changes_to_ynab(transactions_to_sync, ynab_client, budget_id, ynab_accounts):
-    """Filters duplicates and syncs changes (creates or updates) to YNAB."""
+    """Filters duplicates and syncs changes (creates or updates) to YNAB.
+
+    Returns True if every attempted YNAB call succeeded (or there was nothing
+    to do); False if any create or update raised. The caller uses this to
+    decide whether the cache can be cleared.
+    """
     print("Syncing changes to YNAB...")
 
     # Build set of valid YNAB account IDs for validation
@@ -1007,14 +1099,18 @@ def sync_changes_to_ynab(transactions_to_sync, ynab_client, budget_id, ynab_acco
             # It's a create
             transactions_to_create.append(txn)
 
+    create_ok = True
+    update_ok = True
+
     # 1. Create Transactions
     if transactions_to_create:
         print(f"Creating {len(transactions_to_create)} new transactions...")
         try:
-            ret = ynab_client.create_transactions(budget_id, transactions_to_create)
+            ynab_client.create_transactions(budget_id, transactions_to_create)
             print("Successfully created transactions.")
         except Exception as e:
             print(f"Failed to create transactions: {e}")
+            create_ok = False
 
     # 2. Update Transactions
     if transactions_to_update:
@@ -1024,9 +1120,12 @@ def sync_changes_to_ynab(transactions_to_sync, ynab_client, budget_id, ynab_acco
             print("Successfully updated transactions.")
         except Exception as e:
             print(f"Failed to update transactions: {e}")
+            update_ok = False
 
     if not transactions_to_create and not transactions_to_update:
         print("No changes to sync.")
+
+    return create_ok and update_ok
 
 
 def sync_transactions(
@@ -1059,6 +1158,10 @@ def sync_transactions(
             finwise_transactions, ynab_client, budget_id, account_id_to_name, ynab_accounts
         )
 
+    # Restore in-progress decisions from a previous (possibly aborted) run.
+    # Applied after aliases so cached transfer markings are not clobbered.
+    _apply_cache(transactions_to_process)
+
     # Process categories for all transactions
     process_categories(
         transactions_to_process,
@@ -1068,8 +1171,14 @@ def sync_transactions(
         ynab_accounts,
     )
 
+    # Capture the final iteration's decision before pushing to YNAB.
+    save_cache(_build_cache(transactions_to_process))
+
     # Sync changes to YNAB (create or update)
-    sync_changes_to_ynab(transactions_to_process, ynab_client, budget_id, ynab_accounts)
+    if sync_changes_to_ynab(
+        transactions_to_process, ynab_client, budget_id, ynab_accounts
+    ):
+        clear_cache()
 
 
 def main():
