@@ -10,11 +10,9 @@ from finab.models import (
 )  # Import needed for Starting Balance txn
 from finab.config import (
     load_aliases,
-    save_aliases,
     load_payee_rules,
     save_payee_rules,
     load_merchant_aliases,
-    save_merchant_aliases,
     load_category_rules,
     save_category_rules,
     load_budget_id,

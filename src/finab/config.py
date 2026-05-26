@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from typing import Dict, List, Any, Optional
+from finab.store import ConfigStore
 
 CONFIG_FILE = Path("config.json")
 CACHE_FILE = Path("cache.json")
@@ -23,17 +24,14 @@ def _save_data(data: Dict[str, Any]) -> None:
         json.dump(data, f, indent=4)
 
 
-def load_aliases() -> Dict[str, str]:
-    """Loads the account aliases from config.json."""
-    data = _load_data()
-    return data.get("account_aliases", {})
+def load_aliases(store: Optional[ConfigStore] = None) -> Dict[str, str]:
+    """Backward-compat shim: returns {finwise_account_name: ynab_alias}.
 
-
-def save_aliases(aliases: Dict[str, str]) -> None:
-    """Saves the account aliases to config.json."""
-    data = _load_data()
-    data["account_aliases"] = aliases
-    _save_data(data)
+    Synthesized from the new ConfigStore so callers in the transaction
+    pipeline keep working without changes.
+    """
+    store = store or ConfigStore()
+    return {acc["finwise"]["name"]: acc["alias"] for acc in store.accounts()}
 
 
 def load_payee_rules() -> List[Dict[str, str]]:
@@ -62,17 +60,17 @@ def save_category_rules(rules: Dict[str, str]) -> None:
     _save_data(data)
 
 
-def load_merchant_aliases() -> Dict[str, str]:
-    """Loads the merchant aliases from config.json."""
-    data = _load_data()
-    return data.get("merchant_aliases", {})
+def load_merchant_aliases(store: Optional[ConfigStore] = None) -> Dict[str, str]:
+    """Backward-compat shim: returns {finwise_merchant_id: alias}.
 
-
-def save_merchant_aliases(aliases: Dict[str, str]) -> None:
-    """Saves the merchant aliases to config.json."""
-    data = _load_data()
-    data["merchant_aliases"] = aliases
-    _save_data(data)
+    Flattens the 1:many merchants store into the legacy flat dict shape.
+    """
+    store = store or ConfigStore()
+    return {
+        fw_id: m["alias"]
+        for m in store.merchants()
+        for fw_id in m["finwise"]
+    }
 
 
 def load_budget_id() -> Optional[str]:
