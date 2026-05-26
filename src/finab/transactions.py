@@ -174,8 +174,37 @@ def _pick_category(
 
 
 def _pick_category_from_full_list(category_groups: list) -> Optional[str]:
-    """Stub: filled in Task 7b. Returns None for now."""
-    print(_dim("  (Other-category picker not implemented yet)"))
+    """Flat numbered picker over every active YNAB category, grouped by
+    category group for readability. Returns the chosen category id, or
+    None if the user backs out (empty input)."""
+    # Flatten while preserving group order.
+    flat = []
+    for g in category_groups:
+        for c in getattr(g, "categories", []) or []:
+            if getattr(c, "hidden", False) or getattr(c, "deleted", False):
+                continue
+            flat.append((g, c))
+
+    if not flat:
+        print(_dim("  No categories available."))
+        return None
+
+    print()
+    last_group_id = None
+    for i, (g, c) in enumerate(flat, start=1):
+        if g.id != last_group_id:
+            print(f"  {_bold(g.name)}")
+            last_group_id = g.id
+        print(f"   {i:>3}. {c.name}")
+    print()
+    raw = input(_cyan("  Pick a number, Enter to go back: ")).strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        n = int(raw)
+        if 1 <= n <= len(flat):
+            return flat[n - 1][1].id
+        print(f"  Out of range (1..{len(flat)})")
     return None
 
 

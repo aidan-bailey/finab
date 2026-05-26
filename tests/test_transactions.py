@@ -213,5 +213,47 @@ class TestPickCategory(unittest.TestCase):
         self.assertEqual(result, "c-groceries")
 
 
+from finab.transactions import _pick_category_from_full_list
+
+
+class TestPickCategoryFromFullList(unittest.TestCase):
+    def _cat(self, cid, name, hidden=False, deleted=False):
+        c = MagicMock(id=cid, hidden=hidden, deleted=deleted)
+        c.name = name
+        return c
+
+    def _grp(self, gid, name, cats):
+        g = MagicMock(id=gid)
+        g.name = name
+        g.categories = cats
+        return g
+
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    @patch("builtins.input", return_value="2")
+    def test_picks_by_global_number(self, _input, _stdout):
+        groups = [
+            self._grp("g1", "Bills", [self._cat("c1", "Internet"), self._cat("c2", "Power")]),
+            self._grp("g2", "Fun",   [self._cat("c3", "Movies")]),
+        ]
+        self.assertEqual(_pick_category_from_full_list(groups), "c2")
+
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    @patch("builtins.input", return_value="")
+    def test_empty_input_returns_none(self, _input, _stdout):
+        self.assertIsNone(_pick_category_from_full_list([]))
+
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    @patch("builtins.input", return_value="1")
+    def test_skips_hidden_and_deleted(self, _input, _stdout):
+        groups = [
+            self._grp("g1", "X", [
+                self._cat("c1", "Hidden", hidden=True),
+                self._cat("c2", "Real"),
+            ]),
+        ]
+        # Picks 1 -> the only non-hidden category
+        self.assertEqual(_pick_category_from_full_list(groups), "c2")
+
+
 if __name__ == "__main__":
     unittest.main()
