@@ -148,18 +148,48 @@ def _extract_distinct_merchants(fw_transactions) -> list[dict]:
     """Walk FinWise transactions and emit one record per unique merchant_id.
 
     FinWise has no merchant endpoint; merchant data lives on transactions.
+    Captures a few sample transactions per merchant so the user has enough
+    context to recognize the merchant when prompted (merchant_name is often
+    null on the FinWise side).
     """
     seen: dict[str, dict] = {}
+    samples: dict[str, list[dict]] = {}
     for t in fw_transactions:
         mid = getattr(t, "merchant_id", None)
         if not mid:
             continue
-        if mid in seen:
-            continue
-        seen[mid] = {
-            "id": mid,
-            "name": getattr(t, "merchant_name", None) or mid,
+
+        sample = {
+            "description": getattr(t, "description", None),
+            "amount": None,
+            "date": None,
         }
+        amt = getattr(t, "amount", None)
+        if amt is not None:
+            inner = getattr(amt, "amount", amt)
+            try:
+                sample["amount"] = float(inner)
+            except (TypeError, ValueError):
+                pass
+        d = getattr(t, "date", None)
+        if d is not None:
+            try:
+                sample["date"] = d.date().isoformat() if hasattr(d, "date") else d.isoformat()
+            except (AttributeError, TypeError):
+                sample["date"] = str(d)
+
+        if mid not in seen:
+            seen[mid] = {
+                "id": mid,
+                "name": getattr(t, "merchant_name", None),
+                "samples": [],
+            }
+            samples[mid] = []
+
+        if len(samples[mid]) < 3:
+            samples[mid].append(sample)
+            seen[mid]["samples"] = samples[mid]
+
     return list(seen.values())
 
 
@@ -292,16 +322,28 @@ def sync_merchants(
         if store.merchant_by_finwise_id(fw_m["id"]):
             continue
 
+        # Show enough context to identify the merchant. FinWise's merchant_name
+        # is frequently null, so the transaction description + sample amount
+        # is what the user actually needs to recognize the merchant.
+        print(f"\n--- Unknown merchant ---")
+        print(f"  Merchant ID:    {fw_m['id']}")
+        print(f"  Merchant Name:  {fw_m.get('name') or '(none)'}")
+        for s in fw_m.get("samples", []):
+            amount_str = f"{s['amount']:.2f}" if s.get("amount") is not None else "?"
+            date_str = s.get("date") or "?"
+            desc = s.get("description") or "(no description)"
+            print(f"  Sample:         {date_str}  {amount_str:>10}  {desc}")
+
         alias = _prompt_alias_required(
-            f"Enter YNAB payee for merchant '{fw_m['name']}' (id={fw_m['id']})",
-            default=fw_m["name"],
+            "Enter YNAB payee name",
+            default=fw_m.get("name") or None,
         )
 
         existing = store.merchant_by_alias(alias)
         if existing:
             store.attach_finwise_to_merchant(existing["id"], fw_m)
             print(
-                f"Attached FinWise merchant '{fw_m['name']}' to existing "
+                f"Attached FinWise merchant '{fw_m['id']}' to existing "
                 f"'{existing['alias']}'"
             )
             continue
