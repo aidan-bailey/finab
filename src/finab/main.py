@@ -47,6 +47,29 @@ def normalize_payee_for_matching(payee_name: Optional[str]) -> str:
     return normalized.lower()
 
 
+def _normalize_alias(alias: str) -> str:
+    """Normalize an alias for lookup (lowercased, whitespace stripped).
+
+    The stored alias keeps original casing; only index keys are normalized.
+    """
+    return alias.strip().lower()
+
+
+def _prompt_alias_required(prompt: str, default: Optional[str] = None) -> str:
+    """Prompt the user for an alias. Re-prompts until a non-empty value is entered."""
+    while True:
+        if default:
+            shown = f"{prompt} (default: '{default}'): "
+        else:
+            shown = prompt
+        raw = input(shown).strip()
+        if raw:
+            return raw
+        if default:
+            return default
+        print("Alias is required. Please enter a value.")
+
+
 def generate_import_id(original_id: str, offset: str) -> str:
     """
     Generate a deterministic, unique import_id for YNAB.
