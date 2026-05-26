@@ -154,5 +154,63 @@ class TestConfigStoreMerchants(unittest.TestCase):
         self.assertIn("fw-shell-2", m2["finwise"])
 
 
+class TestRefreshRecords(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmpdir.name) / "config.json"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_refresh_overwrites_finwise_record(self):
+        store = ConfigStore(self.path)
+        store.add_account(
+            alias="A",
+            fw_record={"id": "fw-A", "name": "Old Name", "balance": 100},
+            ynab_record={"id": "yn-A", "name": "A"},
+        )
+
+        # Build a fake FinWise account with updated fields
+        class FakeFW:
+            id = "fw-A"
+            def dict(self):
+                return {"id": "fw-A", "name": "New Name", "balance": 200}
+
+        store.refresh_records(fw_accounts=[FakeFW()])
+
+        acc = store.account_by_finwise_id("fw-A")
+        self.assertEqual(acc["finwise"]["name"], "New Name")
+        self.assertEqual(acc["finwise"]["balance"], 200)
+
+    def test_refresh_overwrites_ynab_payee_on_merchant(self):
+        store = ConfigStore(self.path)
+        store.add_merchant(
+            alias="Shell",
+            fw_record={"id": "fw-shell", "name": "Shell"},
+            ynab_record={"id": "yn-shell", "name": "Shell (old)"},
+        )
+
+        class FakeYNAB:
+            id = "yn-shell"
+            def to_dict(self):
+                return {"id": "yn-shell", "name": "Shell"}
+
+        store.refresh_records(ynab_payees=[FakeYNAB()])
+
+        m = store.merchant_by_finwise_id("fw-shell")
+        self.assertEqual(m["ynab"]["name"], "Shell")
+
+    def test_refresh_ignores_unknown_records(self):
+        store = ConfigStore(self.path)
+
+        class FakeFW:
+            id = "fw-unknown"
+            def dict(self):
+                return {"id": "fw-unknown"}
+
+        # Should not raise even though no account is linked
+        store.refresh_records(fw_accounts=[FakeFW()])
+
+
 if __name__ == "__main__":
     unittest.main()

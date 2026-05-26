@@ -12,6 +12,18 @@ def _normalize_alias(alias: str) -> str:
     return alias.strip().lower()
 
 
+def to_dict(obj) -> dict:
+    """Convert a pydantic-like or dataclass-like object to a plain dict."""
+    if isinstance(obj, dict):
+        return obj
+    for method_name in ("model_dump", "to_dict", "dict"):
+        method = getattr(obj, method_name, None)
+        if callable(method):
+            return method()
+    # Fall back to __dict__ (dataclasses, simple objects)
+    return dict(obj.__dict__)
+
+
 class ConfigStore:
     def __init__(self, path: Path = CONFIG_FILE):
         self.path = Path(path)
@@ -107,3 +119,38 @@ class ConfigStore:
         if not internal_id:
             return None
         return self._data["merchants"][internal_id]
+
+    def refresh_records(
+        self,
+        fw_accounts=None,
+        ynab_accounts=None,
+        ynab_payees=None,
+    ) -> None:
+        """Overwrite cached finwise/ynab sub-records with freshly fetched data."""
+        changed = False
+
+        if fw_accounts:
+            for fw in fw_accounts:
+                acc = self.account_by_finwise_id(fw.id)
+                if acc:
+                    acc["finwise"] = to_dict(fw)
+                    changed = True
+
+        if ynab_accounts:
+            yn_by_id = {y.ynab_id or y.id: y for y in ynab_accounts}
+            for acc in self.accounts():
+                yn_id = acc["ynab"].get("id")
+                if yn_id and yn_id in yn_by_id:
+                    acc["ynab"] = to_dict(yn_by_id[yn_id])
+                    changed = True
+
+        if ynab_payees:
+            yn_by_id = {p.id: p for p in ynab_payees}
+            for m in self.merchants():
+                yn_id = m["ynab"].get("id")
+                if yn_id and yn_id in yn_by_id:
+                    m["ynab"] = to_dict(yn_by_id[yn_id])
+                    changed = True
+
+        if changed:
+            self._save()
