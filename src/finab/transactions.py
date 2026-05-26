@@ -211,9 +211,64 @@ def _pick_category_from_full_list(category_groups: list) -> Optional[str]:
 def _create_new_category(
     category_groups: list, ynab_client: YNABClient, budget_id: str
 ) -> Optional[str]:
-    """Stub: filled in Task 8. Returns None for now."""
-    print(_dim("  (New-category flow not implemented yet)"))
-    return None
+    """Walk the user through creating a new category (with the option to
+    also create a new group on the fly). Returns the new category's id, or
+    None if cancelled.
+
+    Side effect: appends the new category to the chosen group's `.categories`
+    list (and the new group to `category_groups` if one was created), so
+    later prompts in the same run see them without re-fetching from YNAB.
+    """
+    name = input(_cyan("  New category name (Enter to cancel): ")).strip()
+    if not name:
+        return None
+
+    # Pick or create a group
+    print()
+    print(f"  {_bold('Target group:')}")
+    for i, g in enumerate(category_groups, start=1):
+        print(f"   {i:>3}. {g.name}")
+    print(f"   {_dim('n)')} New group")
+    print(f"   {_dim('b)')} Back")
+    print()
+
+    chosen_group = None
+    while chosen_group is None:
+        raw = input(_cyan("  Pick: ")).strip().lower()
+        if not raw or raw == "b":
+            return None
+        if raw == "n":
+            grp_name = input(_cyan("  New group name (Enter to cancel): ")).strip()
+            if not grp_name:
+                return None
+            try:
+                new_grp = ynab_client.create_category_group(budget_id, grp_name)
+            except Exception as e:
+                print(f"  Failed to create category group: {e}")
+                return None
+            if not hasattr(new_grp, "categories") or new_grp.categories is None:
+                new_grp.categories = []
+            category_groups.append(new_grp)
+            chosen_group = new_grp
+        elif raw.isdigit():
+            n = int(raw)
+            if 1 <= n <= len(category_groups):
+                chosen_group = category_groups[n - 1]
+            else:
+                print(f"  Out of range (1..{len(category_groups)})")
+        else:
+            print(f"  Unrecognized: {raw!r}")
+
+    try:
+        new_cat = ynab_client.create_category(budget_id, name, chosen_group.id)
+    except Exception as e:
+        print(f"  Failed to create category: {e}")
+        return None
+
+    if chosen_group.categories is None:
+        chosen_group.categories = []
+    chosen_group.categories.append(new_cat)
+    return new_cat.id
 
 
 class _PendingQueue:

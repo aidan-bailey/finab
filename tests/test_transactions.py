@@ -255,5 +255,61 @@ class TestPickCategoryFromFullList(unittest.TestCase):
         self.assertEqual(_pick_category_from_full_list(groups), "c2")
 
 
+from finab.transactions import _create_new_category
+
+
+class TestCreateNewCategory(unittest.TestCase):
+    def _grp(self, gid, name):
+        g = MagicMock(id=gid)
+        g.name = name
+        g.categories = []
+        return g
+
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    @patch("builtins.input", side_effect=["Pet Supplies", "1"])
+    def test_creates_category_in_existing_group(self, _input, _stdout):
+        groups = [self._grp("g1", "Bills"), self._grp("g2", "Fun")]
+        client = MagicMock()
+        new_cat = MagicMock(id="new-c", category_group_id="g1")
+        new_cat.name = "Pet Supplies"
+        client.create_category.return_value = new_cat
+
+        result = _create_new_category(groups, client, "bid")
+
+        self.assertEqual(result, "new-c")
+        client.create_category.assert_called_once_with("bid", "Pet Supplies", "g1")
+        client.create_category_group.assert_not_called()
+        # Side effect: the group's categories should include the new one.
+        self.assertIn(new_cat, groups[0].categories)
+
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    @patch("builtins.input", side_effect=["Cleaning", "n", "Home Maintenance"])
+    def test_creates_new_group_then_category(self, _input, _stdout):
+        groups = []
+        client = MagicMock()
+        new_grp = MagicMock(id="new-g")
+        new_grp.name = "Home Maintenance"
+        new_grp.categories = []
+        new_cat = MagicMock(id="new-c", category_group_id="new-g")
+        new_cat.name = "Cleaning"
+        client.create_category_group.return_value = new_grp
+        client.create_category.return_value = new_cat
+
+        result = _create_new_category(groups, client, "bid")
+
+        self.assertEqual(result, "new-c")
+        client.create_category_group.assert_called_once_with("bid", "Home Maintenance")
+        client.create_category.assert_called_once_with("bid", "Cleaning", "new-g")
+        # Both the new group and new category should be appended to the in-memory list.
+        self.assertIn(new_grp, groups)
+        self.assertIn(new_cat, new_grp.categories)
+
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    @patch("builtins.input", return_value="")
+    def test_empty_name_returns_none(self, _input, _stdout):
+        result = _create_new_category([], MagicMock(), "bid")
+        self.assertIsNone(result)
+
+
 if __name__ == "__main__":
     unittest.main()
