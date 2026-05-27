@@ -15,6 +15,7 @@ from finab.tui.screens.accounts import AccountsScreen
 from finab.tui.screens.memory import MemoryScreen
 from finab.tui.screens.merchants import MerchantsScreen
 from finab.tui.screens.placeholder import PlaceholderScreen
+from finab.tui.screens.settings import SettingsScreen
 from finab.tui.screens.sync import SyncScreen
 from finab.tui.widgets.error_banner import ErrorBanner
 
@@ -77,14 +78,20 @@ class FinabApp(App):
                 yield AccountsScreen(id="screen-accounts")
                 yield MerchantsScreen(id="screen-merchants")
                 yield MemoryScreen(id="screen-memory")
-                for name, sid in SCREEN_IDS[4:]:  # skip first 4
-                    yield PlaceholderScreen(name, id=sid)
+                yield SettingsScreen(id="screen-settings")
         yield Footer()
 
     def on_mount(self) -> None:
         """After the layout is mounted, kick off the data fetch — but
         only if clients were provided. Tests that don't provide clients
         get a TUI shell with no data, which is fine."""
+        # Settings screen renders from local state — bind immediately.
+        try:
+            settings = self.query_one(SettingsScreen)
+            settings.bind_data(budget_id=self._budget_id)
+        except Exception:
+            pass
+
         if self._fw_client and self._ynab_client and self._budget_id:
             self._kickoff_load()
         elif self._store is not None:

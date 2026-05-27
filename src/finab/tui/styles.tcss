@@ -180,3 +180,17 @@ MemoryScreen {
 #memory-list {
     height: 1fr;
 }
+
+SettingsScreen {
+    width: 1fr;
+    height: 1fr;
+    padding: 1 2;
+}
+
+SettingsScreen Static {
+    padding: 1 0;
+}
+
+#settings-title {
+    text-style: bold;
+}
