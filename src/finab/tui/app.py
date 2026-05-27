@@ -12,6 +12,7 @@ from textual.widgets import ContentSwitcher, Footer, Label, ListItem, ListView
 
 from finab.tui.data_loader import LoadedData, load_all
 from finab.tui.screens.accounts import AccountsScreen
+from finab.tui.screens.memory import MemoryScreen
 from finab.tui.screens.merchants import MerchantsScreen
 from finab.tui.screens.placeholder import PlaceholderScreen
 from finab.tui.screens.sync import SyncScreen
@@ -49,6 +50,8 @@ class FinabApp(App):
         ("a", "accounts_rename", "Rename"),
         ("l", "accounts_relink", "Relink"),
         ("i", "accounts_toggle_ignore", "Toggle ignore"),
+        ("d", "memory_delete", "Delete entry"),
+        ("R", "memory_reset", "Reset merchant"),
     ]
 
     def __init__(self, *, fw_client=None, ynab_client=None, budget_id: str = None, store=None, tx_store=None):
@@ -73,7 +76,8 @@ class FinabApp(App):
                 yield SyncScreen(id="screen-sync")
                 yield AccountsScreen(id="screen-accounts")
                 yield MerchantsScreen(id="screen-merchants")
-                for name, sid in SCREEN_IDS[3:]:  # skip Sync + Accounts + Merchants
+                yield MemoryScreen(id="screen-memory")
+                for name, sid in SCREEN_IDS[4:]:  # skip first 4
                     yield PlaceholderScreen(name, id=sid)
         yield Footer()
 
@@ -87,6 +91,7 @@ class FinabApp(App):
             try:
                 self.query_one(AccountsScreen).bind_data(store=self._store)
                 self.query_one(MerchantsScreen).bind_data(store=self._store)
+                self.query_one(MemoryScreen).bind_data(store=self._store)
             except Exception:
                 pass
 
@@ -121,6 +126,8 @@ class FinabApp(App):
             accounts_screen.bind_data(store=self._store)
             merchants_screen = self.query_one(MerchantsScreen)
             merchants_screen.bind_data(store=self._store)
+            memory_screen = self.query_one(MemoryScreen)
+            memory_screen.bind_data(store=self._store)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.item is None:
@@ -203,6 +210,19 @@ class FinabApp(App):
     def action_accounts_toggle_ignore(self) -> None:
         if self._accounts_screen_active():
             self.query_one(AccountsScreen).action_toggle_ignore()
+
+    def _memory_screen_active(self) -> bool:
+        from textual.widgets import ContentSwitcher
+        switcher = self.query_one("#content-switcher", ContentSwitcher)
+        return switcher.current == "screen-memory"
+
+    def action_memory_delete(self) -> None:
+        if self._memory_screen_active():
+            self.query_one(MemoryScreen).action_delete()
+
+    def action_memory_reset(self) -> None:
+        if self._memory_screen_active():
+            self.query_one(MemoryScreen).action_reset()
 
     def action_quit_with_confirm(self) -> None:
         """Quit, but if Sync has decided-but-not-flushed candidates,

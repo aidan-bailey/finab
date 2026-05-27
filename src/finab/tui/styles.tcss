@@ -170,3 +170,13 @@ MerchantsScreen {
 #merchants-list {
     height: 1fr;
 }
+
+MemoryScreen {
+    width: 1fr;
+    height: 1fr;
+    padding: 1 2;
+}
+
+#memory-list {
+    height: 1fr;
+}
