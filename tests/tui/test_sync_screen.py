@@ -58,3 +58,57 @@ async def test_transaction_card_renders_candidate():
         assert "-84.21" in card_text
         assert "2026-05-22" in card_text
         assert "COSTCO WHSE" in card_text
+
+
+@pytest.mark.asyncio
+async def test_sync_screen_builds_engine_from_loaded_data(tmp_path):
+    """When SyncScreen.bind_data is called with LoadedData, a SyncEngine
+    is built and the candidates appear in the PendingList."""
+    from datetime import date as date_cls
+    from finab.store import ConfigStore
+    from finab.transactions import TransactionsStore
+    from finab.models import Transaction
+    from finab.tui.app import FinabApp
+    from finab.tui.data_loader import LoadedData
+    from finab.tui.screens.sync import SyncScreen
+    from finab.tui.widgets.pending_list import PendingList
+
+    # Seed a ConfigStore so the engine finds a mapped account.
+    store = ConfigStore(tmp_path / "config.json")
+    store.add_account(
+        alias="Chase",
+        fw_record={"id": "fw-acc-1", "name": "Chase", "type": "checking", "balance": 0, "currency_code": "USD"},
+        ynab_record={"id": "yn-acc-1", "name": "Chase", "type": "checking", "balance": 0, "transfer_payee_id": "yn-tpayee-1"},
+        ignore_transactions=False,
+    )
+    tx_store = TransactionsStore(tmp_path / "transactions.json")
+    txn = Transaction(
+        import_id="fw-1",
+        amount=-84210,  # milliunits
+        date=date_cls.today(),
+        memo="COSTCO",
+        merchant_id=None,
+        account_id="fw-acc-1",
+    )
+    pre_loaded = LoadedData(
+        fw_accounts=[],
+        fw_transactions=[txn],
+        ynab_accounts=[],
+        ynab_transactions=[],
+        ynab_categories=[],
+        ynab_category_groups=[],
+        ynab_payees=[],
+    )
+
+    app = FinabApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        sync_screen = app.query_one(SyncScreen)
+        sync_screen.bind_data(loaded=pre_loaded, store=store, tx_store=tx_store)
+        await pilot.pause()
+        # One candidate should be present. With no merchant linked, the
+        # auto-rule resolves it as 'no-merchant'.
+        pl = app.query_one("#sync-pending", PendingList)
+        assert len(pl.candidates) == 1
+        assert pl.candidates[0].status == "auto"
+        assert pl.candidates[0].auto_reason == "no-merchant"

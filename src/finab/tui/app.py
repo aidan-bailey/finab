@@ -32,13 +32,15 @@ class FinabApp(App):
         ("q", "quit", "Quit"),
     ]
 
-    def __init__(self, *, fw_client=None, ynab_client=None, budget_id: str = None):
+    def __init__(self, *, fw_client=None, ynab_client=None, budget_id: str = None, store=None, tx_store=None):
         """Construct. Clients and budget_id are injectable for tests; in
         production they default to real values built from .env."""
         super().__init__()
         self._fw_client = fw_client
         self._ynab_client = ynab_client
         self._budget_id = budget_id
+        self._store = store
+        self._tx_store = tx_store
         self.loaded: LoadedData | None = None
 
     def compose(self) -> ComposeResult:
@@ -66,7 +68,14 @@ class FinabApp(App):
             ynab_client=self._ynab_client,
             budget_id=self._budget_id,
         )
-        # Sync screen will be wired up to react to self.loaded in Task 9.
+        if self.loaded.error is None and self._store and self._tx_store:
+            from finab.tui.screens.sync import SyncScreen
+            sync_screen = self.query_one(SyncScreen)
+            sync_screen.bind_data(
+                loaded=self.loaded,
+                store=self._store,
+                tx_store=self._tx_store,
+            )
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.item is None:

@@ -9,7 +9,7 @@ from textual.app import ComposeResult
 from textual.containers import Container, Horizontal
 from textual.widgets import ListView
 
-from finab.engine.sync import Candidate
+from finab.engine.sync import Candidate, SyncEngine
 from finab.tui.widgets.pending_list import PendingList
 from finab.tui.widgets.transaction_card import TransactionCard
 
@@ -25,6 +25,9 @@ class SyncScreen(Container):
         super().__init__(id=id)
         self._candidates: list[Candidate] = []
         self._alias_of: Callable[[Candidate], str] = _placeholder_alias_of
+        self._engine = None
+        self._store = None
+        self._tx_store = None
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -61,6 +64,29 @@ class SyncScreen(Container):
             card.set_candidate(self._candidates[0], alias_of=alias_of)
         else:
             card.set_candidate(None)
+
+    def bind_data(self, *, loaded, store, tx_store) -> None:
+        """Build a SyncEngine from loaded data and push its candidates
+        into the view. The screen retains references to the engine and
+        store so subsequent actions (apply, undo, flush) can dispatch."""
+        self._store = store
+        self._tx_store = tx_store
+        self._engine = SyncEngine(
+            fw_transactions=loaded.fw_transactions,
+            ynab_transactions=loaded.ynab_transactions,
+            ynab_categories=loaded.ynab_categories,
+            store=store,
+            tx_store=tx_store,
+        )
+
+        def alias_of(candidate):
+            merchant_id = getattr(candidate.txn, "merchant_id", None)
+            if not merchant_id:
+                return None
+            merchant = store.merchant_by_finwise_id(merchant_id)
+            return merchant.get("alias") if merchant else None
+
+        self.set_candidates(self._engine.candidates, alias_of=alias_of)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         """When the cursor in PendingList moves, refresh the detail card."""
