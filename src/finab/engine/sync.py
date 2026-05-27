@@ -9,7 +9,7 @@ inside merge_and_filter_transactions are retained verbatim from the
 original — they emit dedup diagnostics (counts and warnings) and aren't
 worth refactoring out at this stage of the migration.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
@@ -420,6 +420,9 @@ class Candidate:
     `txn` is the FinWise-side Transaction; `merge_and_filter_transactions`
     may have already mutated its `import_id` to our durable id, and may
     have set `ynab_id` if this is an UPDATE rather than a CREATE.
+
+    `warnings` holds human-readable strings the UI should surface non-
+    destructively (e.g. via a ⚠ glyph) but that don't block flushing.
     """
     id: str                              # stable; we use txn.import_id (durable our_id)
     txn: Any                             # finab.models.Transaction — Any to avoid import cycle here
@@ -429,6 +432,7 @@ class Candidate:
     # taken at the moment a user decision is applied. Used by undo() to
     # restore the pre-decision state. None on pending or auto candidates.
     prior_state: Optional[dict] = None
+    warnings: list = field(default_factory=list)
 
 
 class SyncEngine:
@@ -507,6 +511,24 @@ class SyncEngine:
             candidate.status = "auto"
             candidate.auto_reason = "transfer"
             return candidate
+
+        # (b2) Warning: FW says transfer but merchant isn't a transfer payee.
+        # We still flow through to the normal auto/pending paths — this
+        # transaction will be pushed without a transfer payee linkage,
+        # which is wrong but recoverable. Surface a warning so the user
+        # can fix the merchant linkage later.
+        if getattr(txn, "is_transfer", False):
+            if merchant:
+                candidate.warnings.append(
+                    f"FinWise marks this as a transfer but merchant "
+                    f"'{merchant.get('alias', '?')}' isn't linked to a YNAB "
+                    f"account. Re-link via the Merchants screen."
+                )
+            else:
+                candidate.warnings.append(
+                    "FinWise marks this as a transfer but no merchant is "
+                    "linked. It will push without a transfer payee."
+                )
 
         # (c) No merchant
         if not merchant:
@@ -631,6 +653,35 @@ class SyncEngine:
         c.txn.payee_name = None
         c.txn.category_id = None
         c.txn.subtransactions = []
+        c.status = "decided"
+
+    def apply_history(
+        self,
+        candidate_id: str,
+        *,
+        entry: dict,
+    ) -> None:
+        """Record a repeat-from-history decision for the named candidate.
+
+        `entry` is a `processings` entry: {parent_memo, splits} where
+        splits is a list of {category_id, amount_milliunits, memo}.
+
+        Multi-split entries are scaled proportionally to the current
+        txn.amount (mirroring _apply_processing_to_txn from the engine
+        helpers). Snapshots prior state so undo works the same as for
+        apply_category / apply_split.
+
+        Updates merchant memory (re-applying an entry counts as a
+        categorization for that amount).
+        """
+        c = self._candidate(candidate_id)
+        c.prior_state = self._snapshot(c.txn)
+        _apply_processing_to_txn(entry, c.txn)
+        merchant = self._store.merchant_by_finwise_id(
+            getattr(c.txn, "merchant_id", None)
+        )
+        if merchant:
+            _update_merchant_memory(self._store, merchant, c.txn)
         c.status = "decided"
 
     def undo(self, candidate_id: str) -> None:

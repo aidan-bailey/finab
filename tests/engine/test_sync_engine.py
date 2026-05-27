@@ -597,3 +597,104 @@ class TestFlush:
         with pytest.raises(RuntimeError, match="simulated"):
             engine.flush(client, budget_id="bid")
         assert c.status == "decided"  # not flushed
+
+
+class TestCandidateWarnings:
+    def test_fw_transfer_with_unlinked_merchant_gets_warning(self, tmp_path):
+        """When FinWise marks the txn as a transfer but the merchant isn't
+        linked to an account's transfer payee, _build_candidate should
+        populate `warnings` so the UI can render ⚠."""
+        from datetime import date as date_cls
+        store = _seeded_store(tmp_path)
+        store.add_merchant(
+            alias="Costco",
+            fw_record={"id": "fw-merchant-wat", "name": "Costco", "samples": []},
+            ynab_record={"id": "yn-pay-2", "name": "Costco", "transfer_account_id": None},
+        )
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        today = date_cls.today()
+        txn = _build_txn(
+            fw_uuid="fw-w1", amount=-5000,
+            account_id="fw-acc-1", merchant_id="fw-merchant-wat",
+            date_str=f"{today.year:04d}-{today.month:02d}-{today.day:02d}",
+            is_transfer=True,
+        )
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        c = engine.candidates[0]
+        assert len(c.warnings) >= 1
+        assert any("transfer" in w.lower() for w in c.warnings)
+
+
+class TestApplyHistory:
+    def _setup(self, tmp_path):
+        from datetime import date as date_cls
+        store = _seeded_store(tmp_path)
+        store.add_merchant(
+            alias="Costco",
+            fw_record={"id": "fw-merchant-2", "name": "Costco", "samples": []},
+            ynab_record={"id": "yn-pay-2", "name": "Costco", "transfer_account_id": None},
+        )
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        today = date_cls.today()
+        txn = _build_txn(
+            fw_uuid="fw-h1", amount=-8421,
+            account_id="fw-acc-1", merchant_id="fw-merchant-2",
+            date_str=f"{today.year:04d}-{today.month:02d}-{today.day:02d}",
+        )
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        return engine
+
+    def test_apply_history_single_split(self, tmp_path):
+        engine = self._setup(tmp_path)
+        c = engine.candidates[0]
+        entry = {
+            "parent_memo": "weekly",
+            "splits": [{"category_id": "cat-groc", "amount_milliunits": -8421, "memo": ""}],
+        }
+        engine.apply_history(c.id, entry=entry)
+        assert c.status == "decided"
+        assert str(c.txn.category_id) == "cat-groc"
+        assert c.prior_state is not None
+
+    def test_apply_history_multi_split_scales(self, tmp_path):
+        """apply_history scales multi-split amounts to current txn.amount."""
+        engine = self._setup(tmp_path)
+        c = engine.candidates[0]
+        entry = {
+            "parent_memo": "x",
+            "splits": [
+                {"category_id": "cat-a", "amount_milliunits": -6000, "memo": ""},
+                {"category_id": "cat-b", "amount_milliunits": -4000, "memo": ""},
+            ],
+        }
+        engine.apply_history(c.id, entry=entry)
+        assert c.status == "decided"
+        assert c.txn.category_id is None
+        assert len(c.txn.subtransactions) == 2
+        total = sum(s["amount"] for s in c.txn.subtransactions)
+        assert total == c.txn.amount
+
+    def test_apply_history_supports_undo(self, tmp_path):
+        engine = self._setup(tmp_path)
+        c = engine.candidates[0]
+        entry = {
+            "parent_memo": "x",
+            "splits": [{"category_id": "cat-groc", "amount_milliunits": -8421, "memo": ""}],
+        }
+        engine.apply_history(c.id, entry=entry)
+        assert c.status == "decided"
+        engine.undo(c.id)
+        assert c.status == "pending"
+        assert c.txn.category_id is None
