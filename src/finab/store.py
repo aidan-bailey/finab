@@ -200,6 +200,49 @@ class ConfigStore:
         self._rebuild_indexes()
         self._save()
 
+    def set_account_alias(self, account_id: str, alias: str) -> None:
+        """Rename an account's alias. Rebuilds the alias index."""
+        acc = self._data["accounts"][account_id]
+        acc["alias"] = alias
+        self._rebuild_indexes()
+        self._save()
+
+    def set_account_ignore(self, account_id: str, ignore: bool) -> None:
+        """Toggle whether transactions on this account are processed."""
+        acc = self._data["accounts"][account_id]
+        acc["ignore_transactions"] = bool(ignore)
+        self._save()
+
+    def set_merchant_alias(self, merchant_id: str, alias: str) -> None:
+        """Rename a merchant's alias. Rebuilds the alias index."""
+        m = self._data["merchants"][merchant_id]
+        m["alias"] = alias
+        self._rebuild_indexes()
+        self._save()
+
+    def delete_processing_entry(self, merchant_id: str, amount_key: str) -> None:
+        """Drop a single entry from a merchant's processings dict.
+
+        Idempotent — silently no-ops if the key isn't present. Does NOT
+        adjust `categories_used` counts; those are statistical and
+        shouldn't change just because one historical entry was forgotten.
+        """
+        m = self._data["merchants"][merchant_id]
+        processings = m.get("processings") or {}
+        if amount_key in processings:
+            del processings[amount_key]
+            m["processings"] = processings
+            self._save()
+
+    def reset_merchant_memory(self, merchant_id: str) -> None:
+        """Wipe both categories_used and processings on a merchant. The
+        merchant entry itself (alias, FW/YNAB linkage) is preserved.
+        """
+        m = self._data["merchants"][merchant_id]
+        m["categories_used"] = {}
+        m["processings"] = {}
+        self._save()
+
     def refresh_records(
         self,
         fw_accounts=None,

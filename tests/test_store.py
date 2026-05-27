@@ -373,5 +373,82 @@ class TestMigrateLastProcessingToProcessings(unittest.TestCase):
         self.assertIn("processings", m)
 
 
+class TestConfigStoreMutationsForTui:
+    """Mutation methods added in Plan 3 for the TUI's Accounts/Merchants/Memory screens."""
+
+    def _populated(self, tmp_path):
+        store = ConfigStore(tmp_path / "config.json")
+        store.add_account(
+            alias="Chase Checking",
+            fw_record={"id": "fw-acc-1", "name": "Chase", "type": "checking", "balance": 0, "currency_code": "USD"},
+            ynab_record={"id": "yn-acc-1", "name": "Chase", "type": "checking", "balance": 0, "transfer_payee_id": "yn-tpayee-1"},
+            ignore_transactions=False,
+        )
+        store.add_merchant(
+            alias="Costco",
+            fw_record={"id": "fw-merchant-1", "name": "Costco", "samples": []},
+            ynab_record={"id": "yn-pay-1", "name": "Costco", "transfer_account_id": None},
+        )
+        store.set_merchant_memory(
+            store.merchant_by_alias("Costco")["id"],
+            categories_used={"cat-groc": 5, "cat-house": 2},
+            processings={
+                "-8421": {"parent_memo": "weekly", "splits": [{"category_id": "cat-groc", "amount_milliunits": -8421, "memo": ""}]},
+                "-1500": {"parent_memo": "snack", "splits": [{"category_id": "cat-house", "amount_milliunits": -1500, "memo": ""}]},
+            },
+        )
+        return store
+
+    def test_set_account_alias(self, tmp_path):
+        store = self._populated(tmp_path)
+        acc = store.account_by_finwise_id("fw-acc-1")
+        store.set_account_alias(acc["id"], "Chase Primary")
+        assert store.account_by_finwise_id("fw-acc-1")["alias"] == "Chase Primary"
+        assert store.account_by_alias("Chase Checking") is None
+        assert store.account_by_alias("Chase Primary") is not None
+
+    def test_set_account_ignore(self, tmp_path):
+        store = self._populated(tmp_path)
+        acc = store.account_by_finwise_id("fw-acc-1")
+        assert acc["ignore_transactions"] is False
+        store.set_account_ignore(acc["id"], True)
+        assert store.account_by_finwise_id("fw-acc-1")["ignore_transactions"] is True
+        # Idempotent.
+        store.set_account_ignore(acc["id"], True)
+        assert store.account_by_finwise_id("fw-acc-1")["ignore_transactions"] is True
+
+    def test_set_merchant_alias(self, tmp_path):
+        store = self._populated(tmp_path)
+        m = store.merchant_by_finwise_id("fw-merchant-1")
+        store.set_merchant_alias(m["id"], "Costco Wholesale")
+        assert store.merchant_by_finwise_id("fw-merchant-1")["alias"] == "Costco Wholesale"
+        assert store.merchant_by_alias("Costco") is None
+        assert store.merchant_by_alias("Costco Wholesale") is not None
+
+    def test_delete_processing_entry(self, tmp_path):
+        store = self._populated(tmp_path)
+        m = store.merchant_by_alias("Costco")
+        assert "-8421" in m["processings"]
+        store.delete_processing_entry(m["id"], "-8421")
+        m_after = store.merchant_by_alias("Costco")
+        assert "-8421" not in m_after["processings"]
+        assert "-1500" in m_after["processings"]
+        assert m_after["categories_used"] == {"cat-groc": 5, "cat-house": 2}
+
+    def test_delete_nonexistent_processing_is_noop(self, tmp_path):
+        store = self._populated(tmp_path)
+        m = store.merchant_by_alias("Costco")
+        store.delete_processing_entry(m["id"], "-99999")
+        assert store.merchant_by_alias("Costco")["processings"] == m["processings"]
+
+    def test_reset_merchant_memory(self, tmp_path):
+        store = self._populated(tmp_path)
+        m = store.merchant_by_alias("Costco")
+        store.reset_merchant_memory(m["id"])
+        m_after = store.merchant_by_alias("Costco")
+        assert m_after["categories_used"] == {}
+        assert m_after["processings"] == {}
+
+
 if __name__ == "__main__":
     unittest.main()
