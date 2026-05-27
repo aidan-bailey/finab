@@ -665,8 +665,13 @@ def _update_merchant_memory(store: ConfigStore, merchant: dict, txn) -> None:
 
 
 def _category_name(categories, category_id: str) -> Optional[str]:
+    # c.id from the YNAB SDK is a uuid.UUID instance; stored ids are str.
+    # Compare on str(c.id) so direct-equality lookups work regardless.
+    target = str(category_id) if category_id is not None else None
+    if target is None:
+        return None
     for c in categories:
-        if c.id == category_id:
+        if str(c.id) == target:
             return c.name
     return None
 

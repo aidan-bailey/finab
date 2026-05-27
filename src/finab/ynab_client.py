@@ -15,7 +15,7 @@ from ynab import (
     PostAccountWrapper,
     NewTransaction,
     PostTransactionsWrapper,
-    ExistingTransaction,
+    SaveTransactionWithIdOrImportId,
     PatchTransactionsWrapper,
     SaveSubTransaction,
     PostPayee,
@@ -307,7 +307,7 @@ class YNABClient:
             if "id" not in txn_dict:
                 continue
 
-            existing_list.append(ExistingTransaction(**txn_dict))
+            existing_list.append(SaveTransactionWithIdOrImportId(**txn_dict))
 
         if not existing_list:
             return None
