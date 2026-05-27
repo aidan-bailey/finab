@@ -78,7 +78,7 @@ def test_main_launches_tui_when_flag_set(monkeypatch):
     launched = {"called": False}
 
     class FakeApp:
-        def __init__(self): pass
+        def __init__(self, **kwargs): pass
         def run(self):
             launched["called"] = True
 

@@ -1,12 +1,15 @@
 """FinabApp — root Textual application.
 
-Layout: sidebar (left) + content switcher (right). Sidebar selection
-changes the active content. Sync is the default.
+Layout: sidebar (left) + content switcher (right). On mount, kicks off
+a background worker that fetches FW + YNAB data. The Sync screen waits
+on that data; placeholder screens don't care.
 """
+from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import ContentSwitcher, Label, ListItem, ListView
 
+from finab.tui.data_loader import LoadedData, load_all
 from finab.tui.screens.placeholder import PlaceholderScreen
 
 
@@ -28,6 +31,15 @@ class FinabApp(App):
         ("q", "quit", "Quit"),
     ]
 
+    def __init__(self, *, fw_client=None, ynab_client=None, budget_id: str = None):
+        """Construct. Clients and budget_id are injectable for tests; in
+        production they default to real values built from .env."""
+        super().__init__()
+        self._fw_client = fw_client
+        self._ynab_client = ynab_client
+        self._budget_id = budget_id
+        self.loaded: LoadedData | None = None
+
     def compose(self) -> ComposeResult:
         with Horizontal():
             yield ListView(
@@ -38,11 +50,26 @@ class FinabApp(App):
                 for name, sid in SCREEN_IDS:
                     yield PlaceholderScreen(name, id=sid)
 
+    def on_mount(self) -> None:
+        """After the layout is mounted, kick off the data fetch — but
+        only if clients were provided. Tests that don't provide clients
+        get a TUI shell with no data, which is fine."""
+        if self._fw_client and self._ynab_client and self._budget_id:
+            self._kickoff_load()
+
+    @work(exclusive=True)
+    async def _kickoff_load(self) -> None:
+        self.loaded = await load_all(
+            fw_client=self._fw_client,
+            ynab_client=self._ynab_client,
+            budget_id=self._budget_id,
+        )
+        # Sync screen will be wired up to react to self.loaded in Task 9.
+
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        """Highlight (cursor move) on the sidebar swaps the visible screen."""
         if event.item is None:
             return
-        item_id = event.item.id  # e.g. "item-screen-accounts"
+        item_id = event.item.id
         if item_id and item_id.startswith("item-"):
             screen_id = item_id.removeprefix("item-")
             switcher = self.query_one("#content-switcher", ContentSwitcher)
