@@ -48,3 +48,20 @@ SyncScreen Horizontal {
     width: 1fr;
     padding: 1 2;
 }
+
+CategoryPickerModal {
+    align: center middle;
+}
+
+#picker-dialog {
+    width: 70%;
+    height: 80%;
+    border: thick $primary;
+    padding: 1 2;
+    background: $surface;
+}
+
+#picker-title {
+    text-style: bold;
+    padding-bottom: 1;
+}
