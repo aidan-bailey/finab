@@ -163,6 +163,27 @@ def merge_and_filter_transactions(
         if not getattr(t, "deleted", False) and getattr(t, "import_id", None)
     }
 
+    # Diagnostic: confirm overlap between our stored mappings and YNAB-side
+    # import_ids. If this overlap is 0 we know dedup is dead in the water and
+    # every FW txn will go through new/rotate (re-prompting the user).
+    stored_our_ids = set(tx_store._data.get("synced_transactions", {}).values())
+    live_import_ids = set(ynab_by_import_id.keys())
+    overlap = stored_our_ids & live_import_ids
+    print(
+        f"  [dedup] YNAB: {len(ynab_transactions)} total, "
+        f"{len(live_import_ids)} have import_id | "
+        f"stored: {len(stored_our_ids)} | "
+        f"overlap (stored ∩ live): {len(overlap)}"
+    )
+    if stored_our_ids and not overlap:
+        # Show samples so we can spot format/case mismatches at a glance.
+        s_sample = sorted(stored_our_ids)[:3]
+        l_sample = sorted(live_import_ids)[:3]
+        print(_yellow(
+            f"  [dedup] ⚠ No overlap! Sample stored: {s_sample}, "
+            f"sample YNAB: {l_sample}"
+        ))
+
     # Prune any stored import_ids no longer present in YNAB.
     tx_store.prune_stale(set(ynab_by_import_id.keys()))
 
