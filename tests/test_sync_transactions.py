@@ -114,6 +114,35 @@ class TestSyncTransactionsIntegration(unittest.TestCase):
         self.ynab_client.create_transactions.assert_not_called()
         self.ynab_client.update_transactions.assert_not_called()
 
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    @patch("builtins.input", return_value="q")
+    def test_quit_breaks_loop_and_auto_flushes(self, _input, _stdout):
+        """Typing 'q' on the first transaction skips all remaining and
+        triggers the end-of-loop auto-flush for anything already in
+        the queue (which is empty in this case)."""
+        t1 = self._fw_txn("fw-tx-1", "fw-acc", -5000, "fw-spar", memo="a")
+        t2 = self._fw_txn("fw-tx-2", "fw-acc", -7000, "fw-spar", memo="b")
+        self.fw_client.get_transactions.return_value = [t1, t2]
+        self.ynab_client.get_transactions.return_value = []
+        cat = self._category("c-groceries", "Groceries")
+        self.ynab_client.get_categories.return_value = [cat]
+        self.ynab_client.get_category_groups_with_categories.return_value = []
+        m = self.store.merchant_by_finwise_id("fw-spar")
+        self.store.set_merchant_memory(
+            m["id"],
+            categories_used={"c-groceries": 1},
+            processings={"-9999": {"parent_memo": "",
+                                   "splits": [{"category_id": "c-groceries",
+                                               "amount_milliunits": -9999,
+                                               "memo": ""}]}},
+        )
+        self.store = ConfigStore(self.path)
+
+        sync_transactions(self.fw_client, self.ynab_client, "bid", self.store)
+
+        # No transactions were categorized -> nothing pushed.
+        self.ynab_client.create_transactions.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

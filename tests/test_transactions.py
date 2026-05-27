@@ -739,6 +739,27 @@ class TestProcessOneTransaction(unittest.TestCase):
         self.assertEqual(outcome, "categorized")
         self.assertEqual(txn.category_id, "c-petrol")
 
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    @patch("builtins.input", return_value="q")
+    def test_user_picks_quit(self, _input, _stdout):
+        """Typing 'q' in the per-transaction prompt returns 'quit' so the
+        orchestrator can break the loop and finish Phase 3."""
+        self.store.set_merchant_memory(
+            self.merchant["id"],
+            categories_used={"c-petrol": 1},
+            processings={"-3000": {"parent_memo": "",
+                                   "splits": [{"category_id": "c-petrol",
+                                               "amount_milliunits": -3000,
+                                               "memo": ""}]}},
+        )
+        self.store = ConfigStore(self.path)
+        txn = self._txn(-3000)
+        outcome = _process_one_transaction(
+            txn, 1, 5, 0, self.store, self.ynab_client, "bid",
+            [self.category], [],
+        )
+        self.assertEqual(outcome, "quit")
+
 
 class TestIsBeforeCurrentMonth(unittest.TestCase):
     def test_before_current_month(self):

@@ -618,6 +618,8 @@ def _process_one_transaction(
       "flush"       — user requested an immediate flush; caller should
                       flush the queue and then re-call this function for
                       the same transaction.
+      "quit"        — user requested to quit categorizing; caller should
+                      break the loop and auto-flush at end.
     """
     # --- (a) Positive amount: auto-inflow ---
     if _is_inflow(txn):
@@ -688,6 +690,7 @@ def _process_one_transaction(
     print(f"  Or:")
     print(f"    {_dim('s)')} Split into multiple categories")
     print(f"    {_dim('c)')} Pick a category")
+    print(f"    {_dim('q)')} Quit categorizing — auto-flush remaining and finish")
     if unflushed_count:
         print(f"    {_dim('f)')} Flush {unflushed_count} pending to YNAB")
     print()
@@ -699,6 +702,8 @@ def _process_one_transaction(
             return "categorized"
         if raw == "f" and unflushed_count:
             return "flush"
+        if raw == "q":
+            return "quit"
         if raw == "c":
             cat_id = _pick_category(merchant, ynab_categories, category_groups, ynab_client, budget_id)
             if cat_id is None:
@@ -804,6 +809,9 @@ def sync_transactions(
                 store, ynab_client, budget_id,
                 ynab_categories, category_groups,
             )
+            if outcome == "quit":
+                print(f"\nSkipping remaining {total - idx} transactions.")
+                break
             if outcome == "flush":
                 queue.flush(ynab_client, budget_id)
                 continue   # re-process the same transaction
