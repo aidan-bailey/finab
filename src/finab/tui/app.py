@@ -148,7 +148,37 @@ class FinabApp(App):
             self.query_one(SyncScreen).action_bottom()
 
     def action_quit_with_confirm(self) -> None:
-        # Filled in by Task 4. For now, behave like the old quit.
+        """Quit, but if Sync has decided-but-not-flushed candidates,
+        prompt the user first."""
+        pending = self._pending_count()
+        if pending == 0:
+            self.exit()
+            return
+        from finab.tui.widgets.flush_confirm import FlushConfirmModal
+        modal = FlushConfirmModal(pending_count=pending)
+        self.push_screen(modal, callback=self._on_flush_confirm)
+
+    def _pending_count(self) -> int:
+        from finab.tui.screens.sync import SyncScreen
+        try:
+            sync_screen = self.query_one(SyncScreen)
+        except Exception:
+            return 0
+        engine = getattr(sync_screen, "_engine", None)
+        if engine is None:
+            return 0
+        return sum(
+            1 for c in engine.candidates
+            if c.status in ("decided", "auto")
+        )
+
+    def _on_flush_confirm(self, result) -> None:
+        if result == "cancel":
+            return
+        if result == "flush":
+            from finab.tui.screens.sync import SyncScreen
+            sync_screen = self.query_one(SyncScreen)
+            sync_screen.action_flush()
         self.exit()
 
     def action_show_help(self) -> None:

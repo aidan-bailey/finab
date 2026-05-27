@@ -103,3 +103,20 @@ HistoryPickerModal {
     text-style: bold;
     padding-bottom: 1;
 }
+
+FlushConfirmModal {
+    align: center middle;
+}
+
+#flush-confirm-dialog {
+    width: 60;
+    height: auto;
+    border: thick $warning;
+    padding: 1 2;
+    background: $surface;
+}
+
+#flush-confirm-message {
+    padding-bottom: 1;
+    text-style: bold;
+}
