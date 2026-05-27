@@ -188,6 +188,16 @@ class TestMergeAndFilter(unittest.TestCase):
         result = merge_and_filter_transactions(fw_txns, ynab_txns, self.store, self.tx_store)
         self.assertEqual(result, [])
 
+    def test_skips_transfer_match_even_without_category(self):
+        """YNAB transfers legitimately have no category — the link IS the
+        resolution. Don't re-prompt the user for them on every sync."""
+        self.tx_store.record("fw-tx-1", "import-id-A")
+        fw_txns = [self._fw_txn("fw-tx-1", "fw-acc", -1000)]
+        ynab = self._ynab_txn("yn-tx-1", -1000, category_id=None, import_id="import-id-A")
+        ynab.transfer_account_id = "yn-other-acc"  # flags as transfer
+        result = merge_and_filter_transactions(fw_txns, [ynab], self.store, self.tx_store)
+        self.assertEqual(result, [])
+
     def test_links_uncategorized_ynab_match_for_update(self):
         """A FW txn whose stored import_id matches an uncategorized YNAB
         txn is marked for update (ynab_id set, import_id kept stable)."""

@@ -224,8 +224,13 @@ def merge_and_filter_transactions(
             # non-deleted subtransaction as evidence of categorization.
             subs = getattr(ynab_match, "subtransactions", None) or []
             has_splits = any(not getattr(s, "deleted", False) for s in subs)
-            if has_category or has_splits:
-                # Already categorized — preserve user's manual work.
+            # Account-to-account transfers in YNAB legitimately have no
+            # category — the transfer_account_id field IS the resolution.
+            # Without this check we'd re-prompt the user for every transfer
+            # on every sync.
+            is_transfer = getattr(ynab_match, "transfer_account_id", None)
+            if has_category or has_splits or is_transfer:
+                # Already resolved — skip.
                 counts["skip_categorized"] += 1
                 continue
             fw_txn.ynab_id = str(ynab_match.id)
