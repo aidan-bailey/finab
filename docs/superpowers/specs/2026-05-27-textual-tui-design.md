@@ -36,7 +36,8 @@ src/finab/
     sync.py             SyncEngine: drives phase 3 as a state machine
     accounts.py         AccountsEngine: pure functions over ConfigStore
     merchants.py        MerchantsEngine: pure functions over ConfigStore
-    decisions.py        Decision dataclasses (Categorize, Split, ForceTransfer)
+    # decisions.py was originally proposed but unused — Plan 1 kept the
+    # apply surface as three typed methods on SyncEngine instead.
   tui/                  (NEW — Textual app, may import engine/)
     app.py              FinabApp(App): mounts screens, owns config + clients
     screens/
@@ -63,7 +64,9 @@ src/finab/
 `SyncEngine` constructor takes the fetched FW + YNAB data, a `ConfigStore`, a `TransactionsStore`. It exposes:
 
 - `candidates: list[Candidate]` — every txn after dedup, each with `status` (`pending` / `auto` / `decided` / `flushed`), an optional auto-applied decision, and a slot for a user decision.
-- `apply(candidate_id, decision)` — record a decision, update merchant memory via `ConfigStore.set_merchant_memory`. No YNAB call.
+- `apply_category(candidate_id, *, category_id, memo=None)` — record a single-category decision, update merchant memory via `ConfigStore.set_merchant_memory`. No YNAB call.
+- `apply_split(candidate_id, *, splits, memo=None)` — record a multi-category split (with sum-to-total invariant), update merchant memory. No YNAB call.
+- `apply_transfer(candidate_id, *, transfer_payee_id)` — force-mark as transfer. No merchant memory write.
 - `flush()` — push all `decided` + `auto` candidates via `YNABClient.create_transactions` / `update_transactions`. Marks them `flushed`. Raises on API failure (no swallowing).
 - `undo(candidate_id)` — clear a user decision back to `pending`. Does *not* revert merchant memory (matches today's "last decision per amount wins" semantics).
 
@@ -239,7 +242,7 @@ Browse and clean up per-merchant `processings`. New capability — CLI can't do 
 
 **Startup**: `FinabApp.on_mount` runs concurrent fetches via Textual workers — FW accounts/merchants/transactions, YNAB accounts/payees/transactions/categories/category_groups. Each screen populates as its data arrives. Sync screen waits for FW txns + YNAB txns + categories before constructing `SyncEngine` and running `merge_and_filter_transactions`.
 
-**On `engine.apply()`**: mutate candidate state, write merchant memory via `ConfigStore.set_merchant_memory`, emit Textual message for row re-render. No YNAB call.
+**On `engine.apply_category()` / `apply_split()` / `apply_transfer()`**: mutate candidate state, snapshot prior state for `undo`, write merchant memory via `ConfigStore.set_merchant_memory` (except `apply_transfer`, which doesn't), emit Textual message for row re-render. No YNAB call.
 
 **On `engine.flush()`**: snapshot `creates` and `updates` from candidates, send each in batched API calls (same as today's `_PendingQueue.flush`), mark candidates `flushed` on success. Import-id mappings in `transactions.json` were already written at load time by `merge_and_filter_transactions` (matches today's behaviour: record-before-push, so a mid-push crash doesn't lose track of what was synced).
 
@@ -261,7 +264,7 @@ Browse and clean up per-merchant `processings`. New capability — CLI can't do 
 
 ## Testing
 
-**Engine** (`tests/engine/`): pure pytest. Construct `SyncEngine` with fixture FW + YNAB data, drive with `apply` / `undo` / `flush`, assert on candidate list + store side effects. Existing `tests/test_transactions.py::TestMergeAndFilter` migrates wholesale (signature stays).
+**Engine** (`tests/engine/`): pure pytest. Construct `SyncEngine` with fixture FW + YNAB data, drive with `apply_category` / `apply_split` / `apply_transfer` / `undo` / `flush`, assert on candidate list + store side effects. Existing `tests/test_transactions.py::TestMergeAndFilter` migrates wholesale (signature stays).
 
 **TUI** (`tests/tui/`): `app.run_test()` + `Pilot`. Two categories — smoke (screens mount without raising) and interaction (`pilot.press(...)` to drive widgets, assert engine state). We avoid Textual snapshot tests; brittle and review-unfriendly for our use case.
 
