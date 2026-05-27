@@ -146,6 +146,7 @@ class Transaction(BaseModel):
     approved: bool = False
     flag_color: Optional[str] = None
     subtransactions: List[dict] = Field(default_factory=list)
+    is_transfer: Optional[bool] = None  # carried from FinWise; not sent to YNAB
 
     @classmethod
     def from_finwise(cls, txn: FinWiseTransaction) -> "Transaction":
@@ -161,6 +162,7 @@ class Transaction(BaseModel):
             import_id=txn.id,
             cleared="cleared",
             approved=False,
+            is_transfer=txn.is_transfer,
         )
 
     def to_ynab(self) -> YNABTransaction:

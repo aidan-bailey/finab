@@ -756,6 +756,26 @@ def _process_one_transaction(
         print(f"  {_dim(f'[{idx}/{total}]')} {_cyan('auto-transfer')} {amount_str} -> {merchant.get('alias', '?')}")
         return "categorized"
 
+    # --- (c2) Sanity check: FinWise says transfer but our merchant link
+    # doesn't reflect that. Print a loud warning so the user can fix the
+    # merchant linkage; otherwise the transaction will go to YNAB with no
+    # transfer-payee and YNAB won't pair it with the matching leg.
+    if getattr(txn, "is_transfer", False):
+        merchant_alias = merchant.get("alias") if merchant else None
+        if merchant_alias:
+            print(_yellow(
+                f"  {_dim(f'[{idx}/{total}]')} ⚠ FinWise marks this as a "
+                f"transfer but merchant '{merchant_alias}' isn't linked to "
+                f"a YNAB account. Re-run Phase 2 (merchant sync) and set "
+                f"the alias to a YNAB account name to fix."
+            ))
+        else:
+            print(_yellow(
+                f"  {_dim(f'[{idx}/{total}]')} ⚠ FinWise marks this as a "
+                f"transfer but no merchant is linked. The transaction will "
+                f"be pushed without a transfer payee."
+            ))
+
     # --- (d) No merchant: push uncategorized ---
     if not merchant:
         txn.category_id = None

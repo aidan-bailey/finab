@@ -971,6 +971,37 @@ class TestProcessOneTransaction(unittest.TestCase):
         )
         self.assertEqual(outcome, "quit")
 
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    def test_warns_when_finwise_says_transfer_but_merchant_not_linked(self, _stdout):
+        """If FinWise marks the txn as a transfer but our merchant isn't
+        linked as a transfer-payee, print a warning so the user can fix it."""
+        txn = self._txn(-3000)  # has merchant 'Spar', not a transfer
+        txn.is_transfer = True
+        # Pre-month so it auto-pushes without prompting and the test stays linear.
+        from datetime import date as d
+        txn.date = d(2020, 1, 1)
+        outcome = _process_one_transaction(
+            txn, 1, 1, 0, self.store, self.ynab_client, "bid",
+            [self.category], [],
+        )
+        # Pre-month path returns "categorized" after pushing with payee.
+        self.assertEqual(outcome, "categorized")
+        out = _stdout.getvalue()
+        self.assertIn("FinWise marks this as a transfer", out)
+        self.assertIn("Spar", out)
+
+    @patch("sys.stdout", new_callable=__import__("io").StringIO)
+    def test_no_warning_when_finwise_does_not_say_transfer(self, _stdout):
+        txn = self._txn(-3000)
+        txn.is_transfer = False
+        from datetime import date as d
+        txn.date = d(2020, 1, 1)
+        _process_one_transaction(
+            txn, 1, 1, 0, self.store, self.ynab_client, "bid",
+            [self.category], [],
+        )
+        self.assertNotIn("FinWise marks this as a transfer", _stdout.getvalue())
+
 
 class TestIsBeforeCurrentMonth(unittest.TestCase):
     def test_before_current_month(self):
