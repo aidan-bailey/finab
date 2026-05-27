@@ -390,6 +390,13 @@ def sync_merchants(
 
 
 def main():
+    import os
+    if os.environ.get("FINAB_TUI"):
+        from finab.tui.app import FinabApp
+        FinabApp().run()
+        return
+
+    # --- existing CLI flow below ---
     load_dotenv()
 
     import sys
