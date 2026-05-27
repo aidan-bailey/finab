@@ -183,6 +183,37 @@ class SyncScreen(Container):
 
         self.app.push_screen(modal, callback=_on_picked)
 
+    def action_undo(self) -> None:
+        c = self._current_candidate()
+        if c is None or self._engine is None:
+            return
+        try:
+            self._engine.undo(c.id)
+        except ValueError:
+            # Not a decided candidate — no-op + bell.
+            self.app.bell()
+            return
+        self._refresh_after_decision(c.id)
+
+    def action_flush(self) -> None:
+        if self._engine is None:
+            return
+        ynab_client = getattr(self.app, "_ynab_client", None)
+        budget_id = getattr(self.app, "_budget_id", None)
+        if ynab_client is None or not budget_id:
+            self.app.bell()
+            return
+        try:
+            self._engine.flush(ynab_client, budget_id)
+        except Exception:
+            # Plan 2: bell on failure. Plan 3 should surface the error.
+            self.app.bell()
+            return
+        # Refresh all rows — many candidates may have moved to 'flushed'.
+        pl = self.query_one("#sync-pending", PendingList)
+        for c in pl.candidates:
+            pl.refresh_row(c.id)
+
     def _refresh_after_decision(self, candidate_id: str) -> None:
         """After an engine.apply_*, rebuild the row and move cursor down one."""
         pl = self.query_one("#sync-pending", PendingList)

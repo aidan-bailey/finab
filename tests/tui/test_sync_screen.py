@@ -172,3 +172,118 @@ async def test_pressing_c_opens_category_picker(tmp_path):
         await pilot.press("c")
         await pilot.pause()
         assert isinstance(app.screen, CategoryPickerModal)
+
+
+@pytest.mark.asyncio
+async def test_u_undoes_the_current_row(tmp_path):
+    from datetime import date as date_cls
+    from finab.models import Transaction
+    from finab.store import ConfigStore
+    from finab.transactions import TransactionsStore
+    from finab.tui.app import FinabApp
+    from finab.tui.data_loader import LoadedData
+    from finab.tui.screens.sync import SyncScreen
+    from finab.tui.widgets.pending_list import PendingList
+
+    store = ConfigStore(tmp_path / "config.json")
+    store.add_account(
+        alias="Chase",
+        fw_record={"id": "fw-acc-1", "name": "Chase", "type": "checking", "balance": 0, "currency_code": "USD"},
+        ynab_record={"id": "yn-acc-1", "name": "Chase", "type": "checking", "balance": 0, "transfer_payee_id": "yn-tpayee-1"},
+        ignore_transactions=False,
+    )
+    store.add_merchant(
+        alias="Costco",
+        fw_record={"id": "fw-merchant-2", "name": "Costco", "samples": []},
+        ynab_record={"id": "yn-pay-2", "name": "Costco", "transfer_account_id": None},
+    )
+    tx_store = TransactionsStore(tmp_path / "transactions.json")
+    today = date_cls.today()
+    txn = Transaction(
+        import_id="fw-1",
+        amount=-84210,
+        date=today,
+        memo="COSTCO",
+        merchant_id="fw-merchant-2",
+        account_id="fw-acc-1",
+    )
+    app = FinabApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        sync_screen = app.query_one(SyncScreen)
+        sync_screen.bind_data(
+            loaded=LoadedData(fw_transactions=[txn]),
+            store=store,
+            tx_store=tx_store,
+        )
+        await pilot.pause()
+        # Decide first.
+        sync_screen._engine.apply_category(sync_screen._engine.candidates[0].id, category_id="cat-x")
+        # Set list cursor.
+        pl = app.query_one("#sync-pending", PendingList)
+        if pl.index is None:
+            pl.index = 0
+        await pilot.pause()
+        # Press u to undo.
+        await pilot.press("u")
+        await pilot.pause()
+        c = sync_screen._engine.candidates[0]
+        assert c.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_f_calls_flush(tmp_path):
+    """Pressing f calls engine.flush with the stub ynab_client and budget_id from FinabApp."""
+    from datetime import date as date_cls
+    from finab.models import Transaction
+    from finab.store import ConfigStore
+    from finab.transactions import TransactionsStore
+    from finab.tui.app import FinabApp
+    from finab.tui.data_loader import LoadedData
+    from finab.tui.screens.sync import SyncScreen
+
+    flushed = {"called": False}
+
+    class _StubYnab:
+        def create_transactions(self, budget_id, txns): flushed["called"] = True
+        def update_transactions(self, budget_id, txns): pass
+
+    store = ConfigStore(tmp_path / "config.json")
+    store.add_account(
+        alias="Chase",
+        fw_record={"id": "fw-acc-1", "name": "Chase", "type": "checking", "balance": 0, "currency_code": "USD"},
+        ynab_record={"id": "yn-acc-1", "name": "Chase", "type": "checking", "balance": 0, "transfer_payee_id": "yn-tpayee-1"},
+        ignore_transactions=False,
+    )
+    store.add_merchant(
+        alias="Costco",
+        fw_record={"id": "fw-merchant-2", "name": "Costco", "samples": []},
+        ynab_record={"id": "yn-pay-2", "name": "Costco", "transfer_account_id": None},
+    )
+    tx_store = TransactionsStore(tmp_path / "transactions.json")
+    today = date_cls.today()
+    txn = Transaction(
+        import_id="fw-1",
+        amount=-84210,
+        date=today,
+        memo="COSTCO",
+        merchant_id="fw-merchant-2",
+        account_id="fw-acc-1",
+    )
+    app = FinabApp(ynab_client=_StubYnab(), budget_id="bid")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        sync_screen = app.query_one(SyncScreen)
+        sync_screen.bind_data(
+            loaded=LoadedData(fw_transactions=[txn]),
+            store=store,
+            tx_store=tx_store,
+        )
+        await pilot.pause()
+        # Decide first.
+        sync_screen._engine.apply_category(sync_screen._engine.candidates[0].id, category_id="cat-x")
+        await pilot.pause()
+        # Press f to flush.
+        await pilot.press("f")
+        await pilot.pause()
+        assert flushed["called"] is True

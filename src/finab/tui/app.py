@@ -7,7 +7,7 @@ on that data; placeholder screens don't care.
 from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
-from textual.widgets import ContentSwitcher, Label, ListItem, ListView
+from textual.widgets import ContentSwitcher, Footer, Label, ListItem, ListView
 
 from finab.tui.data_loader import LoadedData, load_all
 from finab.tui.screens.placeholder import PlaceholderScreen
@@ -35,6 +35,8 @@ class FinabApp(App):
         ("c", "sync_category", "Category"),
         ("s", "sync_split", "Split"),
         ("r", "sync_history", "Repeat history"),
+        ("u", "sync_undo", "Undo"),
+        ("f", "sync_flush", "Flush"),
     ]
 
     def __init__(self, *, fw_client=None, ynab_client=None, budget_id: str = None, store=None, tx_store=None):
@@ -58,6 +60,7 @@ class FinabApp(App):
                 yield SyncScreen(id="screen-sync")
                 for name, sid in SCREEN_IDS[1:]:  # skip Sync (already yielded above)
                     yield PlaceholderScreen(name, id=sid)
+        yield Footer()
 
     def on_mount(self) -> None:
         """After the layout is mounted, kick off the data fetch — but
@@ -107,3 +110,13 @@ class FinabApp(App):
     def action_sync_history(self) -> None:
         if self._sync_screen_active():
             self.query_one(SyncScreen).action_history()
+
+    def action_sync_undo(self) -> None:
+        if self._sync_screen_active():
+            from finab.tui.screens.sync import SyncScreen
+            self.query_one(SyncScreen).action_undo()
+
+    def action_sync_flush(self) -> None:
+        if self._sync_screen_active():
+            from finab.tui.screens.sync import SyncScreen
+            self.query_one(SyncScreen).action_flush()

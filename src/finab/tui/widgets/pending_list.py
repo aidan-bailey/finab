@@ -75,12 +75,27 @@ class PendingList(ListView):
         return self._candidates[idx]
 
     def refresh_row(self, candidate_id: str) -> None:
-        """Rebuild the row for a candidate whose state changed (e.g.,
-        after engine.apply_category). Uses clear-and-rebuild approach for
-        simplicity and Textual version safety."""
-        self.clear()
-        for c in self._candidates:
-            self.append(self._row(c))
+        """Update the display text of a row whose candidate state changed
+        (e.g., after engine.apply_category or engine.undo).
+
+        Rather than removing and re-mounting the ListItem (which races
+        with Textual's deferred DOM mutations), we locate the existing
+        row's Label and update its content in-place. This avoids any
+        duplicate-ID issue while keeping the row's position stable."""
+        try:
+            candidate = next(c for c in self._candidates if c.id == candidate_id)
+        except StopIteration:
+            return
+        glyph = _glyph_for(candidate)
+        alias = self._alias_of(candidate) or "(no merchant)"
+        amount = _amount_str(candidate.txn.amount)
+        new_text = f"{glyph}  {alias:<18.18}  {amount:>10}"
+        try:
+            row_item = self.query_one(f"#row-{candidate_id}")
+            label = row_item.query_one(Label)
+            label.update(new_text)
+        except Exception:
+            pass
 
     # ---- test helpers ----
     def row_glyphs_and_text(self) -> list[tuple[str, str]]:
