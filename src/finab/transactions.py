@@ -857,7 +857,8 @@ def sync_transactions(
                 # Only update merchant memory when an actual categorization
                 # decision was made — skipping transfers, no-merchant pushes,
                 # and pre-current-month auto-pushes whose category is None.
-                # Otherwise we'd clobber last_processing with an empty entry.
+                # Otherwise we'd insert a meaningless empty entry into the
+                # processings dict.
                 has_decision = (
                     getattr(txn, "category_id", None) is not None
                     or bool(getattr(txn, "subtransactions", None))
