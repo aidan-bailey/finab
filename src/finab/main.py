@@ -393,7 +393,6 @@ def main():
     import os
     if os.environ.get("FINAB_TUI"):
         load_dotenv()
-        from finab.store import ConfigStore
         from finab.transactions import TransactionsStore
         from finab.tui.app import FinabApp
         FinabApp(
