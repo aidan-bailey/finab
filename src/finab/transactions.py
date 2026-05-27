@@ -31,7 +31,12 @@ class TransactionsStore:
     otherwise silently no-op a re-push using the deleted-but-remembered id).
     """
 
-    def __init__(self, path: Path = TRANSACTIONS_FILE):
+    def __init__(self, path: Optional[Path] = None):
+        # Resolve default lazily so tests can monkey-patch TRANSACTIONS_FILE
+        # via conftest. A def-time default captures the constant by value
+        # and would defeat the sandbox.
+        if path is None:
+            path = TRANSACTIONS_FILE
         self.path = Path(path)
         self._data = self._load()
         self._data.setdefault("synced_transactions", {})

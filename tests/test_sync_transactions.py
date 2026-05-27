@@ -4,13 +4,15 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from finab.store import ConfigStore
-from finab.transactions import sync_transactions
+from finab.transactions import sync_transactions, TransactionsStore
 
 
 class TestSyncTransactionsIntegration(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.path = Path(self.tmpdir.name) / "config.json"
+        self.tx_path = Path(self.tmpdir.name) / "transactions.json"
+        self.tx_store = TransactionsStore(self.tx_path)
         self.store = ConfigStore(self.path)
         # Seed accounts and merchants for a complete run.
         self.store.add_account(
@@ -75,7 +77,7 @@ class TestSyncTransactionsIntegration(unittest.TestCase):
         )
         self.store = ConfigStore(self.path)
 
-        sync_transactions(self.fw_client, self.ynab_client, "bid", self.store)
+        sync_transactions(self.fw_client, self.ynab_client, "bid", self.store, tx_store=self.tx_store)
 
         # Auto-flush at end should have pushed.
         self.ynab_client.create_transactions.assert_called_once()
@@ -94,7 +96,7 @@ class TestSyncTransactionsIntegration(unittest.TestCase):
         self.ynab_client.get_categories.return_value = [inflow]
         self.ynab_client.get_category_groups_with_categories.return_value = []
 
-        sync_transactions(self.fw_client, self.ynab_client, "bid", self.store)
+        sync_transactions(self.fw_client, self.ynab_client, "bid", self.store, tx_store=self.tx_store)
 
         self.ynab_client.create_transactions.assert_called_once()
         args = self.ynab_client.create_transactions.call_args
@@ -110,7 +112,7 @@ class TestSyncTransactionsIntegration(unittest.TestCase):
         self.ynab_client.get_category_groups_with_categories.return_value = []
 
         # Should not raise; should not push anything.
-        sync_transactions(self.fw_client, self.ynab_client, "bid", self.store)
+        sync_transactions(self.fw_client, self.ynab_client, "bid", self.store, tx_store=self.tx_store)
         self.ynab_client.create_transactions.assert_not_called()
         self.ynab_client.update_transactions.assert_not_called()
 
@@ -138,7 +140,7 @@ class TestSyncTransactionsIntegration(unittest.TestCase):
         )
         self.store = ConfigStore(self.path)
 
-        sync_transactions(self.fw_client, self.ynab_client, "bid", self.store)
+        sync_transactions(self.fw_client, self.ynab_client, "bid", self.store, tx_store=self.tx_store)
 
         # No transactions were categorized -> nothing pushed.
         self.ynab_client.create_transactions.assert_not_called()

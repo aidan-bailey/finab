@@ -35,7 +35,11 @@ def to_dict(obj) -> dict:
 
 
 class ConfigStore:
-    def __init__(self, path: Path = CONFIG_FILE):
+    def __init__(self, path: Optional[Path] = None):
+        # Resolve default lazily so tests (conftest) can monkey-patch
+        # CONFIG_FILE without being defeated by def-time default capture.
+        if path is None:
+            path = CONFIG_FILE
         self.path = Path(path)
         self._data: dict = self._load()
         self._data.setdefault("accounts", {})
