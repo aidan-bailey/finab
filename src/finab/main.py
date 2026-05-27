@@ -10,7 +10,6 @@ from finab.config import (
 )
 from finab.store import ConfigStore, to_dict, normalize_alias
 from finab.transactions import sync_transactions
-import hashlib
 
 
 def _color(code: str, s: str) -> str:
@@ -105,24 +104,6 @@ def _prompt_alias_with_picker(
         if default:
             return default
         print("Alias is required. Please enter a value, or '?' to choose.")
-
-
-def generate_import_id(original_id: str, offset: str) -> str:
-    """
-    Generate a deterministic, unique import_id for YNAB.
-
-    Concatenates the original_id and offset, then generates a SHA-256 hash.
-    Returns the first 36 characters of the hexdigest to stay within YNAB's limit.
-
-    Args:
-        original_id: The original transaction ID from FinWise
-        offset: The offset string used for hashing
-
-    Returns:
-        A 36-character hashed import_id
-    """
-    combined = original_id + offset
-    return hashlib.sha256(combined.encode("utf-8")).hexdigest()[:36]
 
 
 def _calculate_starting_balance(fw_acc, fw_client) -> int:

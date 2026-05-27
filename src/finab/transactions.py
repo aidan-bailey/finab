@@ -3,13 +3,89 @@
 This module owns the per-transaction prompt loop, the pending queue,
 and the orchestration of fetch -> dedup -> categorize -> push.
 """
+import json
+import os
 import sys
+import uuid
 from datetime import date
+from pathlib import Path
 from typing import Optional
 
 from finab.client import FinWiseClient
 from finab.ynab_client import YNABClient
 from finab.store import ConfigStore
+
+
+TRANSACTIONS_FILE = Path("transactions.json")
+
+
+class TransactionsStore:
+    """Owns transactions.json: a map from FinWise transaction UUIDs to the
+    corresponding YNAB transaction UUIDs. Kept separate from ConfigStore
+    because this map is high-churn (one entry per sync) whereas accounts
+    and merchants are low-churn.
+
+    Phase 3 uses this map for dedup instead of YNAB's `import_id` field —
+    so YNAB-side deletes don't leave 'phantom' import_ids that prevent
+    re-importing the same FinWise transaction later.
+    """
+
+    def __init__(self, path: Path = TRANSACTIONS_FILE):
+        self.path = Path(path)
+        self._data = self._load()
+        self._data.setdefault("synced_transactions", {})
+
+    def _load(self) -> dict:
+        if not self.path.exists():
+            return {}
+        try:
+            with open(self.path, "r") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            return {}
+
+    def _save(self) -> None:
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        with open(tmp, "w") as f:
+            json.dump(self._data, f, indent=4, default=str)
+        os.replace(tmp, self.path)
+
+    def synced_ynab_id(self, fw_uuid: str) -> Optional[str]:
+        """Return the YNAB UUID this FinWise transaction was previously
+        synced to, or None if it hasn't been synced."""
+        return self._data["synced_transactions"].get(fw_uuid)
+
+    def record_sync(self, fw_uuid: str, ynab_uuid: str) -> None:
+        """Persist a single fw -> ynab mapping."""
+        self._data["synced_transactions"][fw_uuid] = ynab_uuid
+        self._save()
+
+    def record_syncs(self, mappings: dict) -> None:
+        """Persist a batch of fw -> ynab mappings in one save."""
+        if not mappings:
+            return
+        self._data["synced_transactions"].update(mappings)
+        self._save()
+
+    def remove_sync(self, fw_uuid: str) -> None:
+        """Drop a stale mapping (the YNAB transaction was deleted)."""
+        if fw_uuid in self._data["synced_transactions"]:
+            del self._data["synced_transactions"][fw_uuid]
+            self._save()
+
+    def prune_stale(self, live_ynab_ids: set) -> int:
+        """Drop any mapping whose YNAB UUID is not in the live YNAB fetch.
+        Returns the number of entries removed."""
+        kept = {
+            fw: yn
+            for fw, yn in self._data["synced_transactions"].items()
+            if yn in live_ynab_ids
+        }
+        removed = len(self._data["synced_transactions"]) - len(kept)
+        if removed:
+            self._data["synced_transactions"] = kept
+            self._save()
+        return removed
 
 
 # Names YNAB might use for the inflow category. Checked in this order.
@@ -65,28 +141,37 @@ def _find_inflow_category(categories) -> Optional[str]:
     return None
 
 
-def merge_and_filter_transactions(fw_transactions, ynab_transactions, store: ConfigStore) -> list:
+def merge_and_filter_transactions(
+    fw_transactions,
+    ynab_transactions,
+    store: ConfigStore,
+    tx_store: "TransactionsStore",
+) -> list:
     """Map FinWise accounts to YNAB account ids via the store, dedup against
-    existing YNAB transactions by hashed import_id, and skip ones already
-    categorized in YNAB. Returns the list of FinWise transactions needing
-    processing. Each returned transaction has:
-      - account_id rewritten to the YNAB account id
-      - import_id rewritten to the hashed form
-      - ynab_id set if a matching uncategorized YNAB transaction was found
-        (so the caller knows to PATCH instead of POST)
+    our local sync map (tx_store), and skip transactions already categorized
+    in YNAB. Returns the list of FinWise transactions needing processing.
+
+    Each FW transaction passes through one of four paths:
+      1. account unknown -> drop
+      2. previously synced + YNAB twin exists + categorized -> drop (preserve
+         user's manual categorization in YNAB)
+      3. previously synced + YNAB twin exists + uncategorized -> mark for
+         update (set fw_txn.ynab_id so the queue routes to update_transactions)
+      4. previously synced + YNAB twin missing -> remove the stale map entry,
+         treat as new (push will re-create it)
+      5. never synced -> new transaction
     """
-    from finab.main import generate_import_id  # local import to avoid cycle
-    from finab.config import load_import_id_offset
+    # Build {ynab_uuid: ynab_txn} from the live YNAB fetch, skipping deleted.
+    ynab_by_id = {
+        str(t.id): t
+        for t in ynab_transactions
+        if not getattr(t, "deleted", False)
+    }
 
-    offset = load_import_id_offset()
-
-    ynab_by_import_id = {}
-    for txn in ynab_transactions:
-        if getattr(txn, "import_id", None):
-            ynab_by_import_id[txn.import_id] = txn
+    # Prune any sync-map entries whose YNAB UUID is gone (user-deleted).
+    tx_store.prune_stale(set(ynab_by_id.keys()))
 
     out = []
-    matched_ynab_ids = set()
     for fw_txn in fw_transactions:
         acc = store.account_by_finwise_id(fw_txn.account_id)
         if not acc:
@@ -95,19 +180,23 @@ def merge_and_filter_transactions(fw_transactions, ynab_transactions, store: Con
         if not ynab_account_id:
             continue
 
-        hashed_id = generate_import_id(fw_txn.import_id, offset)
-        fw_txn.import_id = hashed_id
+        # The FW UUID lives on Transaction.import_id (set by from_finwise).
+        fw_uuid = fw_txn.import_id
 
-        ynab_match = ynab_by_import_id.get(hashed_id)
-        if ynab_match and ynab_match.id not in matched_ynab_ids:
-            matched_ynab_ids.add(ynab_match.id)
-            if getattr(ynab_match, "deleted", False):
+        prev_ynab_id = tx_store.synced_ynab_id(fw_uuid) if fw_uuid else None
+        if prev_ynab_id:
+            ynab_match = ynab_by_id.get(prev_ynab_id)
+            if ynab_match is None:
+                # Stale: user deleted in YNAB. prune_stale already removed it;
+                # fall through and treat as new.
+                pass
+            elif getattr(ynab_match, "category_id", None):
+                # Already categorized — preserve user's manual work.
                 continue
-            if ynab_match.category_id:
-                # Already categorized — preserve user's manual YNAB work.
-                continue
-            fw_txn.ynab_id = ynab_match.id
-            fw_txn.category_id = None
+            else:
+                # Uncategorized twin -> mark for update.
+                fw_txn.ynab_id = prev_ynab_id
+                fw_txn.category_id = None
 
         fw_txn.account_id = ynab_account_id
         out.append(fw_txn)
@@ -376,7 +465,15 @@ def _collect_splits(
 
 class _PendingQueue:
     """Holds categorized-but-not-yet-pushed transactions. Flushed on demand
-    via the `f` command, at end of run, or after Ctrl+C confirmation."""
+    via the `f` command, at end of run, or after Ctrl+C confirmation.
+
+    Each create-txn carries `fw_uuid` (the FinWise transaction UUID set by
+    `Transaction.from_finwise` via `import_id`). On flush, we generate a
+    fresh transient `import_id` per create-txn purely so YNAB's batch
+    response echoes it back, letting us correlate which response YNAB
+    transaction maps to which input. The transient `import_id` is never
+    reused; it exists for the duration of a single API call.
+    """
 
     def __init__(self):
         self.creates: list = []
@@ -391,17 +488,58 @@ class _PendingQueue:
         else:
             self.creates.append(txn)
 
-    def flush(self, ynab_client: YNABClient, budget_id: str) -> bool:
+    def flush(self, ynab_client: YNABClient, budget_id: str, tx_store: Optional["TransactionsStore"] = None) -> bool:
         """Push all pending transactions in two batched calls. Returns True
         if both succeed (queue clears). On any exception, returns False and
-        keeps the queue for retry."""
+        keeps the queue for retry.
+
+        For creates: assign each one a fresh transient `import_id` (random
+        UUID) so we can correlate YNAB's response back to the FW UUID.
+        After the push, record the `{fw_uuid -> ynab_uuid}` mappings in
+        `tx_store` so future runs can dedup."""
         try:
             creates_snap = list(self.creates)
             updates_snap = list(self.updates)
+
+            # Build correlation_id -> fw_uuid map and assign transient
+            # import_ids to each create. Preserve the original FW UUID on
+            # the txn (it stays in fw_uuid attr) in case anything reads it
+            # back after flush.
+            correlation_map: dict[str, str] = {}
+            for txn in creates_snap:
+                fw_uuid = getattr(txn, "import_id", None)
+                if not fw_uuid:
+                    continue
+                # Preserve the FW UUID on a side attribute. The Transaction
+                # model doesn't define this field but pydantic v2 with
+                # `extra = "allow"` would accept it; we just stash via
+                # direct attribute set.
+                txn.fw_uuid = fw_uuid
+                correlator = uuid.uuid4().hex[:32]
+                correlation_map[correlator] = fw_uuid
+                txn.import_id = correlator
+
+            create_response = None
             if creates_snap:
-                ynab_client.create_transactions(budget_id, creates_snap)
+                create_response = ynab_client.create_transactions(budget_id, creates_snap)
             if updates_snap:
                 ynab_client.update_transactions(budget_id, updates_snap)
+
+            # Record fw -> ynab mappings from the create response.
+            if create_response is not None and tx_store is not None:
+                mappings = {}
+                try:
+                    returned = create_response.data.transactions or []
+                except AttributeError:
+                    returned = []
+                for ynab_txn in returned:
+                    yn_import = getattr(ynab_txn, "import_id", None)
+                    fw_uuid = correlation_map.get(yn_import) if yn_import else None
+                    if fw_uuid:
+                        mappings[fw_uuid] = str(ynab_txn.id)
+                if mappings:
+                    tx_store.record_syncs(mappings)
+
             self.creates.clear()
             self.updates.clear()
             return True
@@ -644,12 +782,21 @@ def sync_transactions(
     ynab_client: YNABClient,
     budget_id: str,
     store: ConfigStore,
+    tx_store: Optional["TransactionsStore"] = None,
 ) -> None:
     """Phase 3 orchestrator. Fetches all transactions, dedupes, and walks
     the user through categorizing each non-auto-handled transaction.
     Pushes via the _PendingQueue (manual 'f' flush, auto-flush at end,
-    Ctrl+C asks before flushing)."""
+    Ctrl+C asks before flushing).
+
+    Dedup uses a local sync map in transactions.json (TransactionsStore),
+    not YNAB's import_id field, so YNAB-side deletes can re-import cleanly
+    on the next run.
+    """
     print("\n--- Transaction Sync ---")
+
+    if tx_store is None:
+        tx_store = TransactionsStore()
 
     try:
         fw_txns = fw_client.get_transactions()
@@ -675,7 +822,7 @@ def sync_transactions(
         print(f"Failed to fetch YNAB category groups: {e}")
         category_groups = []
 
-    candidates = merge_and_filter_transactions(fw_txns, ynab_txns, store)
+    candidates = merge_and_filter_transactions(fw_txns, ynab_txns, store, tx_store)
     candidates.sort(key=_sort_key(store))
     total = len(candidates)
     print(f"Transactions to process: {_yellow(str(total))}")
@@ -691,7 +838,7 @@ def sync_transactions(
                 ynab_categories, category_groups,
             )
             if outcome == "flush":
-                queue.flush(ynab_client, budget_id)
+                queue.flush(ynab_client, budget_id, tx_store)
                 continue   # re-process the same transaction
             if outcome == "categorized":
                 queue.add(txn)
@@ -710,11 +857,11 @@ def sync_transactions(
             idx += 1
         # Normal end-of-loop: auto-flush whatever's pending.
         if queue.count() > 0:
-            queue.flush(ynab_client, budget_id)
+            queue.flush(ynab_client, budget_id, tx_store)
     except KeyboardInterrupt:
         # User explicitly chose; respect their answer. Don't fall through to
         # an unconditional finally that would re-flush.
         if queue.count() > 0:
             if _confirm(f"\nFlush {queue.count()} pending transactions before exit? [Y/n]: "):
-                queue.flush(ynab_client, budget_id)
+                queue.flush(ynab_client, budget_id, tx_store)
         raise
