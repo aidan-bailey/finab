@@ -632,3 +632,27 @@ class SyncEngine:
         c.txn.category_id = None
         c.txn.subtransactions = []
         c.status = "decided"
+
+    def undo(self, candidate_id: str) -> None:
+        """Revert a user decision: status decided -> pending, restore
+        snapshotted fields on txn. Does NOT revert merchant memory
+        (last-write-wins by amount; an undo+re-decide just overwrites).
+        """
+        c = self._candidate(candidate_id)
+        if c.status != "decided":
+            raise ValueError(
+                f"cannot undo candidate with status {c.status!r}; "
+                f"only 'decided' supports undo"
+            )
+        if c.prior_state is None:
+            raise ValueError(
+                f"no prior_state recorded for candidate {candidate_id!r}"
+            )
+        snap = c.prior_state
+        c.txn.category_id = snap["category_id"]
+        c.txn.subtransactions = snap["subtransactions"]
+        c.txn.payee_id = snap["payee_id"]
+        c.txn.payee_name = snap["payee_name"]
+        c.txn.memo = snap["memo"]
+        c.prior_state = None
+        c.status = "pending"

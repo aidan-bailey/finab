@@ -428,3 +428,63 @@ class TestApplyTransfer:
         merchant = store.merchant_by_finwise_id("fw-merchant-2")
         assert not merchant.get("categories_used")
         assert not merchant.get("processings")
+
+
+class TestUndo:
+    def _setup_decided(self, tmp_path):
+        """Build an engine with one candidate, apply a category, return it."""
+        from datetime import date as date_cls
+        store = _seeded_store(tmp_path)
+        store.add_merchant(
+            alias="Costco",
+            fw_record={"id": "fw-merchant-2", "name": "Costco", "samples": []},
+            ynab_record={"id": "yn-pay-2", "name": "Costco", "transfer_account_id": None},
+        )
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        today = date_cls.today()
+        txn = _build_txn(
+            fw_uuid="fw-8", amount=-8421,
+            account_id="fw-acc-1", merchant_id="fw-merchant-2",
+            date_str=f"{today.year:04d}-{today.month:02d}-{today.day:02d}",
+        )
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        c = engine.candidates[0]
+        engine.apply_category(c.id, category_id="cat-groc", memo="weekly")
+        return engine, c, store
+
+    def test_undo_restores_prior_state(self, tmp_path):
+        engine, c, _ = self._setup_decided(tmp_path)
+        # Prior to apply_category, this candidate was pending with no category.
+        engine.undo(c.id)
+        assert c.status == "pending"
+        assert c.txn.category_id is None
+        assert c.prior_state is None
+
+    def test_undo_does_not_revert_merchant_memory(self, tmp_path):
+        engine, c, store = self._setup_decided(tmp_path)
+        engine.undo(c.id)
+        # Memory write from apply_category persists — by design.
+        merchant = store.merchant_by_finwise_id("fw-merchant-2")
+        assert merchant["categories_used"].get("cat-groc") == 1
+
+    def test_undo_raises_on_auto_candidate(self, tmp_path):
+        store = _seeded_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        txn = _build_txn(fw_uuid="fw-9", amount=-100, account_id="fw-acc-1", merchant_id=None)
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        c = engine.candidates[0]
+        assert c.status == "auto"
+        with pytest.raises(ValueError, match="cannot undo"):
+            engine.undo(c.id)
