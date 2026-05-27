@@ -14,6 +14,8 @@ from finab.tui.screens.placeholder import PlaceholderScreen
 from finab.tui.screens.sync import SyncScreen
 
 
+
+
 SCREEN_IDS = [
     ("Sync", "screen-sync"),
     ("Accounts", "screen-accounts"),
@@ -30,6 +32,9 @@ class FinabApp(App):
 
     BINDINGS = [
         ("q", "quit", "Quit"),
+        ("c", "sync_category", "Category"),
+        ("s", "sync_split", "Split"),
+        ("r", "sync_history", "Repeat history"),
     ]
 
     def __init__(self, *, fw_client=None, ynab_client=None, budget_id: str = None, store=None, tx_store=None):
@@ -85,3 +90,20 @@ class FinabApp(App):
             screen_id = item_id.removeprefix("item-")
             switcher = self.query_one("#content-switcher", ContentSwitcher)
             switcher.current = screen_id
+
+    def _sync_screen_active(self) -> bool:
+        """True when the Sync screen is the currently visible content pane."""
+        switcher = self.query_one("#content-switcher", ContentSwitcher)
+        return switcher.current == "screen-sync"
+
+    def action_sync_category(self) -> None:
+        if self._sync_screen_active():
+            self.query_one(SyncScreen).action_category()
+
+    def action_sync_split(self) -> None:
+        if self._sync_screen_active():
+            self.query_one(SyncScreen).action_split()
+
+    def action_sync_history(self) -> None:
+        if self._sync_screen_active():
+            self.query_one(SyncScreen).action_history()

@@ -10,7 +10,10 @@ from textual.containers import Container, Horizontal
 from textual.widgets import ListView
 
 from finab.engine.sync import Candidate, SyncEngine
+from finab.tui.widgets.category_picker import CategoryPickerModal
+from finab.tui.widgets.history_picker import HistoryPickerModal
 from finab.tui.widgets.pending_list import PendingList
+from finab.tui.widgets.split_editor import SplitEditorModal
 from finab.tui.widgets.transaction_card import TransactionCard
 
 
@@ -96,3 +99,98 @@ class SyncScreen(Container):
         current = pl.current_candidate()
         card = self.query_one("#sync-detail", TransactionCard)
         card.set_candidate(current, alias_of=self._alias_of)
+
+    # ---- action methods (called from FinabApp BINDINGS) ----
+
+    def _current_candidate(self):
+        pl = self.query_one("#sync-pending", PendingList)
+        return pl.current_candidate()
+
+    def action_category(self) -> None:
+        c = self._current_candidate()
+        if c is None or self._engine is None:
+            return
+        merchant = None
+        if getattr(c.txn, "merchant_id", None):
+            merchant = self._store.merchant_by_finwise_id(c.txn.merchant_id)
+        used = (merchant or {}).get("categories_used") or {}
+        alias = (merchant or {}).get("alias") or "?"
+        modal = CategoryPickerModal(
+            categories=self._engine._ynab_categories,
+            used_categories=used,
+            merchant_alias=alias,
+        )
+
+        def _on_picked(category_id):
+            if category_id is None:
+                return
+            self._engine.apply_category(c.id, category_id=category_id)
+            self._refresh_after_decision(c.id)
+
+        self.app.push_screen(modal, callback=_on_picked)
+
+    def action_split(self) -> None:
+        c = self._current_candidate()
+        if c is None or self._engine is None:
+            return
+        merchant = None
+        if getattr(c.txn, "merchant_id", None):
+            merchant = self._store.merchant_by_finwise_id(c.txn.merchant_id)
+        used = (merchant or {}).get("categories_used") or {}
+        alias = (merchant or {}).get("alias") or "?"
+        modal = SplitEditorModal(
+            txn_amount=c.txn.amount,
+            categories=self._engine._ynab_categories,
+            used_categories=used,
+            merchant_alias=alias,
+        )
+
+        def _on_done(splits):
+            if splits is None:
+                return
+            self._engine.apply_split(c.id, splits=splits)
+            self._refresh_after_decision(c.id)
+
+        self.app.push_screen(modal, callback=_on_done)
+
+    def action_history(self) -> None:
+        c = self._current_candidate()
+        if c is None or self._engine is None:
+            return
+        merchant_id = getattr(c.txn, "merchant_id", None)
+        if not merchant_id:
+            return
+        merchant = self._store.merchant_by_finwise_id(merchant_id)
+        if not merchant:
+            return
+        processings = merchant.get("processings") or {}
+        if not processings:
+            return
+        modal = HistoryPickerModal(processings=processings, txn_amount=c.txn.amount)
+
+        def _on_picked(result):
+            if result is None:
+                return
+            _amount_key, entry = result
+            # NOTE: this bypasses the engine and mutates txn directly. Means
+            # undo won't work for these decisions. Documented gap — Plan 3
+            # should add SyncEngine.apply_history(candidate_id, entry) that
+            # snapshots prior state properly.
+            from finab.engine.sync import _apply_processing_to_txn
+            _apply_processing_to_txn(entry, c.txn)
+            c.status = "decided"
+            self._refresh_after_decision(c.id)
+
+        self.app.push_screen(modal, callback=_on_picked)
+
+    def _refresh_after_decision(self, candidate_id: str) -> None:
+        """After an engine.apply_*, rebuild the row and move cursor down one."""
+        pl = self.query_one("#sync-pending", PendingList)
+        pl.refresh_row(candidate_id)
+        # Move cursor to next pending row if there is one.
+        next_idx = (pl.index + 1) if pl.index is not None else 0
+        if next_idx < len(pl.candidates):
+            pl.index = next_idx
+        # Refresh the detail card.
+        card = self.query_one("#sync-detail", TransactionCard)
+        card.set_candidate(pl.current_candidate(), alias_of=self._alias_of)

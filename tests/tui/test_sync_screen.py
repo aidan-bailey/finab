@@ -112,3 +112,63 @@ async def test_sync_screen_builds_engine_from_loaded_data(tmp_path):
         assert len(pl.candidates) == 1
         assert pl.candidates[0].status == "auto"
         assert pl.candidates[0].auto_reason == "no-merchant"
+
+
+@pytest.mark.asyncio
+async def test_pressing_c_opens_category_picker(tmp_path):
+    """Pressing 'c' on a pending candidate pushes CategoryPickerModal."""
+    from datetime import date as date_cls
+    from finab.models import Transaction
+    from finab.store import ConfigStore
+    from finab.transactions import TransactionsStore
+    from finab.tui.app import FinabApp
+    from finab.tui.data_loader import LoadedData
+    from finab.tui.screens.sync import SyncScreen
+    from finab.tui.widgets.category_picker import CategoryPickerModal
+
+    store = ConfigStore(tmp_path / "config.json")
+    store.add_account(
+        alias="Chase",
+        fw_record={"id": "fw-acc-1", "name": "Chase", "type": "checking", "balance": 0, "currency_code": "USD"},
+        ynab_record={"id": "yn-acc-1", "name": "Chase", "type": "checking", "balance": 0, "transfer_payee_id": "yn-tpayee-1"},
+        ignore_transactions=False,
+    )
+    store.add_merchant(
+        alias="Costco",
+        fw_record={"id": "fw-merchant-2", "name": "Costco", "samples": []},
+        ynab_record={"id": "yn-pay-2", "name": "Costco", "transfer_account_id": None},
+    )
+    tx_store = TransactionsStore(tmp_path / "transactions.json")
+    today = date_cls.today()
+    txn = Transaction(
+        import_id="fw-1",
+        amount=-84210,
+        date=today,
+        memo="COSTCO",
+        merchant_id="fw-merchant-2",
+        account_id="fw-acc-1",
+    )
+    app = FinabApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        sync_screen = app.query_one(SyncScreen)
+        sync_screen.bind_data(
+            loaded=LoadedData(fw_transactions=[txn]),
+            store=store,
+            tx_store=tx_store,
+        )
+        await pilot.pause()
+        # Focus the SyncScreen so its 'c' binding is active.
+        sync_screen.focus()
+        # The pending list inside SyncScreen needs to have a candidate
+        # selected. After bind_data, the first candidate is set, but
+        # the list cursor might be unset — force-select index 0.
+        from finab.tui.widgets.pending_list import PendingList
+        pl = app.query_one("#sync-pending", PendingList)
+        pl.focus()
+        if pl.index is None and len(pl.candidates) > 0:
+            pl.index = 0
+        await pilot.pause()
+        await pilot.press("c")
+        await pilot.pause()
+        assert isinstance(app.screen, CategoryPickerModal)
