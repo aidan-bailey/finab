@@ -1047,6 +1047,23 @@ class TestFailLoudFlush(unittest.TestCase):
             q.flush(ynab_client, "bid")
         self.assertIn("YNAB 500", str(cm.exception))
 
+    def test_partial_failure_clears_succeeded_list(self):
+        """If create_transactions succeeds but update_transactions raises,
+        the creates list should already be cleared so a retry doesn't
+        re-post the same creates."""
+        from finab.transactions import _PendingQueue
+        q = _PendingQueue()
+        q.add(MagicMock(ynab_id=None, import_id="iid-create"))
+        q.add(MagicMock(ynab_id="yn-existing", import_id="iid-update"))
+        ynab_client = MagicMock()
+        ynab_client.update_transactions.side_effect = RuntimeError("YNAB 500 on update")
+        with self.assertRaises(RuntimeError):
+            q.flush(ynab_client, "bid")
+        # Creates was successfully pushed — must be cleared.
+        self.assertEqual(len(q.creates), 0)
+        # Updates failed — remains in the queue for retry.
+        self.assertEqual(len(q.updates), 1)
+
 
 class TestFailLoudSyncTransactionsFetch(unittest.TestCase):
     """A fetch failure during sync_transactions must propagate."""

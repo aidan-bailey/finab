@@ -482,15 +482,21 @@ class _PendingQueue:
 
         txn.import_id is already the durable UUID set by
         merge_and_filter_transactions; we send it through as-is.
+
+        Each list is cleared immediately after its own API call succeeds,
+        so a partial failure (creates OK then updates raise) doesn't leave
+        the already-pushed creates in the queue to be re-posted on retry.
+        YNAB would dedup re-posts via import_id, but explicit clearing is
+        clearer than relying on that contract.
         """
         creates_snap = list(self.creates)
         updates_snap = list(self.updates)
         if creates_snap:
             ynab_client.create_transactions(budget_id, creates_snap)
+            self.creates.clear()
         if updates_snap:
             ynab_client.update_transactions(budget_id, updates_snap)
-        self.creates.clear()
-        self.updates.clear()
+            self.updates.clear()
         return True
 
 
