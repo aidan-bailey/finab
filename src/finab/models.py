@@ -166,6 +166,11 @@ class Transaction(BaseModel):
         )
 
     def to_ynab(self) -> YNABTransaction:
+        # Send subtransactions only when there are actual splits. An empty
+        # list on the wire makes YNAB treat the transaction as a split with
+        # 0 children and silently drop the parent's category_id, which then
+        # makes the next sync see it as uncategorized and re-prompt the user.
+        subs = self.subtransactions if self.subtransactions else None
         return YNABTransaction(
             account_id=self.account_id,
             date=self.date,
@@ -178,7 +183,7 @@ class Transaction(BaseModel):
             cleared=self.cleared,
             approved=self.approved,
             flag_color=self.flag_color,
-            subtransactions=self.subtransactions,
+            subtransactions=subs,
         )
 
     @classmethod

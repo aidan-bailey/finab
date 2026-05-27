@@ -166,15 +166,24 @@ def merge_and_filter_transactions(
     # Prune any stored import_ids no longer present in YNAB.
     tx_store.prune_stale(set(ynab_by_import_id.keys()))
 
+    counts = {
+        "skip_no_account": 0, "skip_ignored": 0,
+        "skip_categorized": 0,
+        "update": 0, "rotate": 0, "new": 0,
+    }
+
     out = []
     for fw_txn in fw_transactions:
         acc = store.account_by_finwise_id(fw_txn.account_id)
         if not acc:
+            counts["skip_no_account"] += 1
             continue
         if acc.get("ignore_transactions"):
+            counts["skip_ignored"] += 1
             continue
         ynab_account_id = acc["ynab"].get("id")
         if not ynab_account_id:
+            counts["skip_no_account"] += 1
             continue
 
         fw_uuid = fw_txn.import_id  # FW's own UUID, set by from_finwise
@@ -183,21 +192,50 @@ def merge_and_filter_transactions(
         if our_id and our_id in ynab_by_import_id:
             # Already synced and YNAB still has it.
             ynab_match = ynab_by_import_id[our_id]
-            if getattr(ynab_match, "category_id", None):
+            has_category = getattr(ynab_match, "category_id", None)
+            # Split transactions store the category on each subtransaction,
+            # not on the parent (parent's category_id is None). Treat any
+            # non-deleted subtransaction as evidence of categorization.
+            subs = getattr(ynab_match, "subtransactions", None) or []
+            has_splits = any(not getattr(s, "deleted", False) for s in subs)
+            if has_category or has_splits:
                 # Already categorized — preserve user's manual work.
+                counts["skip_categorized"] += 1
                 continue
             fw_txn.ynab_id = str(ynab_match.id)
             fw_txn.import_id = our_id  # keep stable for update push
             fw_txn.category_id = None
+            counts["update"] += 1
+            print(_dim(
+                f"  [dedup] update: fw={fw_uuid[:8]} "
+                f"{getattr(fw_txn, 'memo', '?')[:40]!r} "
+                f"(YNAB twin uncategorized)"
+            ))
         else:
             # Either never synced, or YNAB-twin missing (user deleted).
             # Rotate: fresh UUID, overwrite stored, push as new.
+            reason = "rotate" if our_id else "new"
+            counts[reason] += 1
             new_id = uuid.uuid4().hex
             tx_store.record(fw_uuid, new_id)
             fw_txn.import_id = new_id
+            if reason == "rotate":
+                print(_dim(
+                    f"  [dedup] rotate: fw={fw_uuid[:8]} "
+                    f"{getattr(fw_txn, 'memo', '?')[:40]!r} "
+                    f"(prior our_id not in YNAB)"
+                ))
 
         fw_txn.account_id = ynab_account_id
         out.append(fw_txn)
+
+    print(
+        f"  [dedup] skipped: {counts['skip_no_account']} no-account, "
+        f"{counts['skip_ignored']} ignored, "
+        f"{counts['skip_categorized']} already-categorized | "
+        f"queued: {counts['new']} new, {counts['update']} update, "
+        f"{counts['rotate']} rotate"
+    )
     return out
 
 

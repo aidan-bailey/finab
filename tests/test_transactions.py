@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import MagicMock
+from datetime import date
 
 from finab.transactions import (
     _PendingQueue,
@@ -7,6 +8,29 @@ from finab.transactions import (
     _is_transfer,
     _find_inflow_category,
 )
+from finab.models import Transaction
+
+
+class TestTransactionToYnab(unittest.TestCase):
+    def test_empty_subtransactions_becomes_none(self):
+        """Empty subtransactions on the wire makes YNAB think it's a split
+        transaction with 0 splits and silently drops the category — leaving
+        the transaction uncategorized and breaking next-run dedup. So empty
+        list must become None."""
+        t = Transaction(
+            account_id="acc", date=date(2026, 1, 1), amount=-1000,
+            category_id="cat-A", subtransactions=[],
+        )
+        y = t.to_ynab()
+        self.assertIsNone(y.subtransactions)
+
+    def test_non_empty_subtransactions_preserved(self):
+        t = Transaction(
+            account_id="acc", date=date(2026, 1, 1), amount=-1000,
+            subtransactions=[{"category_id": "cat-A", "amount": -1000, "memo": ""}],
+        )
+        y = t.to_ynab()
+        self.assertEqual(len(y.subtransactions), 1)
 
 
 class TestPendingQueue(unittest.TestCase):
