@@ -65,3 +65,24 @@ CategoryPickerModal {
     text-style: bold;
     padding-bottom: 1;
 }
+
+SplitEditorModal {
+    align: center middle;
+}
+
+#split-dialog {
+    width: 80%;
+    height: 80%;
+    border: thick $primary;
+    padding: 1 2;
+    background: $surface;
+}
+
+#split-title {
+    text-style: bold;
+    padding-bottom: 1;
+}
+
+#split-help {
+    color: $text-muted;
+}
