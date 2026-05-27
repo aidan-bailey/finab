@@ -505,6 +505,149 @@ class TestRepeatHelpers(unittest.TestCase):
         self.assertEqual(txn.category_id, "cat-B")
 
 
+from finab.transactions import _pick_from_processings, _apply_processing_to_txn
+from unittest.mock import patch
+import io
+
+
+class TestPickFromProcessings(unittest.TestCase):
+    def _cats(self):
+        def c(i, n):
+            m = MagicMock(id=i)
+            m.name = n  # `name=` in MagicMock kwargs names the mock itself, not .name
+            return m
+        return [c("cat-A", "Groceries"), c("cat-B", "Fuel"), c("cat-C", "Eating Out")]
+
+    def test_returns_false_and_no_mutation_when_empty(self):
+        merchant = {"alias": "Spar", "processings": {}}
+        txn = MagicMock(amount=-1000)
+        txn.subtransactions = []
+        txn.category_id = None
+        self.assertFalse(_pick_from_processings(merchant, txn, self._cats()))
+        self.assertIsNone(txn.category_id)
+        self.assertEqual(txn.subtransactions, [])
+
+    @patch("sys.stdout", new_callable=io.StringIO)
+    @patch("finab.transactions.input", create=True, return_value="")
+    def test_empty_input_backs_out(self, _input, _stdout):
+        merchant = {
+            "alias": "Spar",
+            "processings": {
+                "-1000": {"parent_memo": "", "splits": [
+                    {"category_id": "cat-A", "amount_milliunits": -1000, "memo": ""}
+                ]},
+            },
+        }
+        txn = MagicMock(amount=-2500)
+        txn.subtransactions = []
+        txn.category_id = None
+        self.assertFalse(_pick_from_processings(merchant, txn, self._cats()))
+        self.assertIsNone(txn.category_id)
+
+    @patch("sys.stdout", new_callable=io.StringIO)
+    @patch("finab.transactions.input", create=True, return_value="1")
+    def test_picks_single_category_replay(self, _input, _stdout):
+        merchant = {
+            "alias": "Spar",
+            "processings": {
+                "-1000": {"parent_memo": "", "splits": [
+                    {"category_id": "cat-A", "amount_milliunits": -1000, "memo": ""}
+                ]},
+            },
+        }
+        txn = MagicMock(amount=-7500)  # different amount — single-cat replays directly
+        txn.subtransactions = ["leftover"]
+        txn.category_id = None
+        self.assertTrue(_pick_from_processings(merchant, txn, self._cats()))
+        self.assertEqual(txn.category_id, "cat-A")
+        self.assertEqual(txn.subtransactions, [])
+
+    @patch("sys.stdout", new_callable=io.StringIO)
+    @patch("finab.transactions.input", create=True, return_value="1")
+    def test_picks_multi_split_scales_proportionally(self, _input, _stdout):
+        merchant = {
+            "alias": "Spar",
+            "processings": {
+                "-1000": {"parent_memo": "", "splits": [
+                    {"category_id": "cat-A", "amount_milliunits": -600, "memo": ""},
+                    {"category_id": "cat-B", "amount_milliunits": -400, "memo": ""},
+                ]},
+            },
+        }
+        txn = MagicMock(amount=-5000)  # 5x the prior total
+        txn.subtransactions = []
+        txn.category_id = None
+        self.assertTrue(_pick_from_processings(merchant, txn, self._cats()))
+        self.assertIsNone(txn.category_id)
+        self.assertEqual(len(txn.subtransactions), 2)
+        self.assertEqual(txn.subtransactions[0]["amount"], -3000)
+        self.assertEqual(txn.subtransactions[1]["amount"], -2000)
+        # Totals reconcile exactly
+        self.assertEqual(
+            sum(s["amount"] for s in txn.subtransactions), txn.amount
+        )
+
+    @patch("sys.stdout", new_callable=io.StringIO)
+    @patch("finab.transactions.input", create=True, return_value="1")
+    def test_split_rounding_absorbed_into_last(self, _input, _stdout):
+        merchant = {
+            "alias": "Spar",
+            "processings": {
+                "-1000": {"parent_memo": "", "splits": [
+                    {"category_id": "cat-A", "amount_milliunits": -333, "memo": ""},
+                    {"category_id": "cat-B", "amount_milliunits": -333, "memo": ""},
+                    {"category_id": "cat-C", "amount_milliunits": -334, "memo": ""},
+                ]},
+            },
+        }
+        # Pick a current amount that doesn't divide evenly by the prior splits.
+        txn = MagicMock(amount=-1001)
+        txn.subtransactions = []
+        txn.category_id = None
+        self.assertTrue(_pick_from_processings(merchant, txn, self._cats()))
+        # Sum must equal txn.amount exactly (rounding absorbed into last).
+        self.assertEqual(
+            sum(s["amount"] for s in txn.subtransactions), txn.amount
+        )
+
+    @patch("sys.stdout", new_callable=io.StringIO)
+    @patch("finab.transactions.input", create=True, side_effect=["1"])
+    def test_picks_first_entry_when_multiple(self, _input, _stdout):
+        merchant = {
+            "alias": "Spar",
+            "processings": {
+                "-1000": {"parent_memo": "", "splits": [
+                    {"category_id": "cat-A", "amount_milliunits": -1000, "memo": ""}
+                ]},
+                "-5000": {"parent_memo": "", "splits": [
+                    {"category_id": "cat-B", "amount_milliunits": -5000, "memo": ""}
+                ]},
+            },
+        }
+        txn = MagicMock(amount=-9999)
+        txn.subtransactions = []
+        txn.category_id = None
+        self.assertTrue(_pick_from_processings(merchant, txn, self._cats()))
+        self.assertEqual(txn.category_id, "cat-A")
+
+    @patch("sys.stdout", new_callable=io.StringIO)
+    @patch("finab.transactions.input", create=True, side_effect=["99", "1"])
+    def test_out_of_range_reprompts(self, _input, _stdout):
+        merchant = {
+            "alias": "Spar",
+            "processings": {
+                "-1000": {"parent_memo": "", "splits": [
+                    {"category_id": "cat-A", "amount_milliunits": -1000, "memo": ""}
+                ]},
+            },
+        }
+        txn = MagicMock(amount=-1000)
+        txn.subtransactions = []
+        txn.category_id = None
+        self.assertTrue(_pick_from_processings(merchant, txn, self._cats()))
+        self.assertEqual(txn.category_id, "cat-A")
+
+
 from finab.transactions import _update_merchant_memory
 
 

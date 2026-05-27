@@ -602,6 +602,92 @@ def _category_name(categories, category_id: str) -> Optional[str]:
     return None
 
 
+def _pick_from_processings(merchant: dict, txn, ynab_categories: list) -> bool:
+    """Show merchant.processings as a numbered list of prior categorizations
+    (each entry's amount + categories used). User picks one to apply to the
+    current transaction.
+
+    Returns True if a selection was applied (caller treats as categorized);
+    False if user backed out. Mutates txn directly on success.
+    """
+    processings = merchant.get("processings") or {}
+    if not processings:
+        print(_dim("  (no prior processings for this merchant)"))
+        return False
+
+    entries = list(processings.items())  # insertion order
+
+    print()
+    print(f"  {_bold('Prior categorizations for')} '{merchant.get('alias', '?')}':")
+    for i, (amt_key, entry) in enumerate(entries, start=1):
+        try:
+            amt = int(amt_key) / 1000.0
+            amt_str = f"{amt:>10.2f}"
+        except (TypeError, ValueError):
+            amt_str = f"{amt_key:>10}"
+        splits = entry.get("splits", []) or []
+        if len(splits) == 1:
+            cat_name = _category_name(ynab_categories, splits[0]["category_id"]) or "?"
+            line = f"{amt_str}   {cat_name}"
+        else:
+            parts = []
+            for s in splits:
+                cn = _category_name(ynab_categories, s["category_id"]) or "?"
+                parts.append(cn)
+            line = f"{amt_str}   split: {', '.join(parts)}"
+        print(f"   {i:>3}. {line}")
+    print()
+
+    while True:
+        raw = input(_cyan("  Pick a number, Enter to go back: ")).strip()
+        if not raw:
+            return False
+        if raw.isdigit():
+            n = int(raw)
+            if 1 <= n <= len(entries):
+                _, entry = entries[n - 1]
+                _apply_processing_to_txn(entry, txn)
+                return True
+            print(f"  Out of range (1..{len(entries)})")
+            continue
+        print(f"  Unrecognized: {raw!r}")
+
+
+def _apply_processing_to_txn(entry: dict, txn) -> None:
+    """Apply a chosen processing entry to txn.
+    - Single split: set category_id, clear subtransactions.
+    - Multi-split: scale split amounts proportionally to txn.amount so the
+      sum matches the current transaction's total exactly.
+    """
+    splits = entry.get("splits", []) or []
+    if len(splits) == 1:
+        txn.category_id = splits[0]["category_id"]
+        txn.subtransactions = []
+        return
+    # Multi-split: scale proportionally to current txn.amount.
+    total_prior = sum(s["amount_milliunits"] for s in splits)
+    if total_prior == 0:
+        # Degenerate — fall back to applying just the first split's category.
+        txn.category_id = splits[0]["category_id"]
+        txn.subtransactions = []
+        return
+    ratio = txn.amount / total_prior
+    scaled = [
+        {
+            "category_id": s["category_id"],
+            "amount": int(round(s["amount_milliunits"] * ratio)),
+            "memo": "",
+        }
+        for s in splits
+    ]
+    # Absorb rounding error into the last split so totals always reconcile.
+    diff = txn.amount - sum(x["amount"] for x in scaled)
+    if scaled and diff:
+        scaled[-1]["amount"] += diff
+    txn.category_id = None
+    txn.subtransactions = scaled
+
+
 def _process_one_transaction(
     txn,
     idx: int,
@@ -699,6 +785,8 @@ def _process_one_transaction(
     print(f"  Or:")
     print(f"    {_dim('s)')} Split into multiple categories")
     print(f"    {_dim('c)')} Pick a category")
+    if merchant.get("processings"):
+        print(f"    {_dim('r)')} Repeat from history")
     print(f"    {_dim('q)')} Quit categorizing — auto-flush remaining and finish")
     if unflushed_count:
         print(f"    {_dim('f)')} Flush {unflushed_count} pending to YNAB")
@@ -714,6 +802,11 @@ def _process_one_transaction(
             return "flush"
         if raw == "q":
             return "quit"
+        if raw == "r":
+            if _pick_from_processings(merchant, txn, ynab_categories):
+                print(f"  {_green('→ applied')} processing from history")
+                return "categorized"
+            continue
         if raw == "c":
             cat_id = _pick_category(merchant, ynab_categories, category_groups, ynab_client, budget_id)
             if cat_id is None:
