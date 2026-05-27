@@ -803,6 +803,47 @@ class TestMemoryGateOnMissingDecision(unittest.TestCase):
         self.assertEqual(m["last_processing"]["splits"][0]["category_id"], "cat-existing")
 
 
+class TestMerchantMemoryStringifiesCategoryId(unittest.TestCase):
+    """Regression: category ids from the YNAB SDK come back as UUID objects;
+    they must be stringified before being stored as dict keys (JSON can't
+    serialize UUID keys)."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmpdir.name) / "config.json"
+        self.store = ConfigStore(self.path)
+        self.merchant = self.store.add_merchant(
+            alias="Aperitif",
+            fw_record={"id": "fw-ap", "name": "Aperitif"},
+            ynab_record={"id": "yn-ap", "name": "Aperitif"},
+        )
+        self.store = ConfigStore(self.path)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_uuid_category_id_stored_as_string(self):
+        from uuid import UUID
+        from finab.transactions import _update_merchant_memory
+        # Simulate a category_id that is a UUID object (as returned by
+        # the YNAB SDK).
+        uuid_cat = UUID("12345678-1234-1234-1234-123456789abc")
+        txn = MagicMock()
+        txn.amount = -44000
+        txn.category_id = uuid_cat
+        txn.subtransactions = []
+        txn.memo = "lunch"
+
+        _update_merchant_memory(self.store, self.merchant, txn)
+
+        # The store must be reloadable from disk — meaning the JSON dump
+        # succeeded, i.e. the category_id was stringified.
+        store2 = ConfigStore(self.path)
+        m = store2.merchant_by_finwise_id("fw-ap")
+        self.assertEqual(m["categories_used"], {str(uuid_cat): 1})
+        self.assertEqual(m["last_processing"]["splits"][0]["category_id"], str(uuid_cat))
+
+
 class TestTransactionsStore(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()

@@ -137,7 +137,7 @@ def _find_inflow_category(categories) -> Optional[str]:
     for candidate in _INFLOW_CATEGORY_NAMES:
         c = by_name.get(candidate)
         if c is not None:
-            return c.id
+            return str(c.id)
     return None
 
 
@@ -305,7 +305,7 @@ def _pick_category_from_full_list(category_groups: list) -> Optional[str]:
     if raw.isdigit():
         n = int(raw)
         if 1 <= n <= len(flat):
-            return flat[n - 1][1].id
+            return str(flat[n - 1][1].id)
         print(f"  Out of range (1..{len(flat)})")
     return None
 
@@ -370,7 +370,7 @@ def _create_new_category(
     if chosen_group.categories is None:
         chosen_group.categories = []
     chosen_group.categories.append(new_cat)
-    return new_cat.id
+    return str(new_cat.id)
 
 
 def _prompt_memo(default: str = "") -> str:
@@ -586,12 +586,19 @@ def _apply_repeat(merchant: dict, txn) -> None:
 def _update_merchant_memory(store: ConfigStore, merchant: dict, txn) -> None:
     """Update the merchant's categories_used (frequency map) and
     last_processing (split structure for Enter-repeat) based on the just-
-    categorized transaction. Persists via store.set_merchant_memory."""
+    categorized transaction. Persists via store.set_merchant_memory.
+
+    Stringifies category_id values before storing — pickers may return
+    UUID objects (from the YNAB SDK) and JSON can't serialize UUID dict
+    keys."""
+    def _cid_str(value):
+        return str(value) if value is not None else None
+
     subs = list(getattr(txn, "subtransactions", []) or [])
     if subs:
         splits = [
             {
-                "category_id": s["category_id"],
+                "category_id": _cid_str(s["category_id"]),
                 "amount_milliunits": s["amount"],
                 "memo": s.get("memo", "") or "",
             }
@@ -600,7 +607,7 @@ def _update_merchant_memory(store: ConfigStore, merchant: dict, txn) -> None:
     else:
         splits = [
             {
-                "category_id": txn.category_id,
+                "category_id": _cid_str(txn.category_id),
                 "amount_milliunits": txn.amount,
                 "memo": getattr(txn, "memo", "") or "",
             }
