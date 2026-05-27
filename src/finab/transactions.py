@@ -176,6 +176,8 @@ def merge_and_filter_transactions(
         acc = store.account_by_finwise_id(fw_txn.account_id)
         if not acc:
             continue
+        if acc.get("ignore_transactions"):
+            continue
         ynab_account_id = acc["ynab"].get("id")
         if not ynab_account_id:
             continue

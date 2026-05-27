@@ -163,6 +163,32 @@ class TestSyncMerchants(unittest.TestCase):
         self.assertEqual(m["ynab"]["id"], "yn-shell")
 
     @patch("finab.main.input", create=True, return_value="Spar")
+    def test_skips_merchants_from_ignored_accounts(self, _input):
+        """Phase 2's merchant extraction filters out transactions whose
+        FW account is flagged ignore_transactions."""
+        self.store.add_account(
+            alias="Discovery Bank ZAR",
+            fw_record={"id": "fw-zar"},
+            ynab_record={"id": "yn-zar"},
+        )
+        accounts = list(self.store.accounts())
+        zar = next(a for a in accounts if a["alias"] == "Discovery Bank ZAR")
+        self.store._data["accounts"][zar["id"]]["ignore_transactions"] = True
+        self.store._save()
+        self.store = ConfigStore(self.config_path)
+
+        ignored_txn = self._fw_txn("fw-only-on-ignored", "X")
+        ignored_txn.account_id = "fw-zar"
+        self.fw_client.get_transactions.return_value = [ignored_txn]
+        self.ynab_client.get_payees.return_value = []
+
+        from finab.main import sync_merchants
+        sync_merchants(self.fw_client, self.ynab_client, "bid", self.store)
+
+        self.assertIsNone(self.store.merchant_by_finwise_id("fw-only-on-ignored"))
+        self.ynab_client.create_payee.assert_not_called()
+
+    @patch("finab.main.input", create=True, return_value="Spar")
     def test_skip_known_merchant(self, _input):
         # Already linked
         self.store.add_merchant(

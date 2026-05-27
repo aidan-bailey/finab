@@ -181,6 +181,18 @@ class TestMergeAndFilter(unittest.TestCase):
         # Stale mapping pruned.
         self.assertIsNone(self.tx_store.synced_ynab_id("fw-tx-1"))
 
+    def test_skips_account_marked_ignore_transactions(self):
+        """Transactions whose FW account is flagged ignore_transactions
+        are dropped — they never reach the YNAB sync."""
+        accounts = list(self.store.accounts())
+        self.store._data["accounts"][accounts[0]["id"]]["ignore_transactions"] = True
+        self.store._save()
+        self.store = ConfigStore(self.config_path)
+
+        fw_txns = [self._fw_txn("fw-tx-1", "fw-acc", -1000)]
+        result = merge_and_filter_transactions(fw_txns, [], self.store, self.tx_store)
+        self.assertEqual(result, [])
+
 
 from unittest.mock import patch
 from finab.transactions import _pick_category

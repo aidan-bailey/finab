@@ -499,6 +499,15 @@ def sync_merchants(
         except Exception as e:
             print(f"Warning: failed to refetch YNAB payees after reconcile: {e}")
 
+    def _account_is_ignored(fw_account_id):
+        acc = store.account_by_finwise_id(fw_account_id)
+        return bool(acc and acc.get("ignore_transactions"))
+
+    fw_transactions = [
+        t for t in fw_transactions
+        if not _account_is_ignored(getattr(t, "account_id", None))
+    ]
+
     fw_merchants = _extract_distinct_merchants(fw_transactions)
     unknown = [m for m in fw_merchants if not store.merchant_by_finwise_id(m["id"])]
     total = len(unknown)
