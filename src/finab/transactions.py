@@ -341,11 +341,7 @@ def _create_new_category(
             grp_name = input(_cyan("  New group name (Enter to cancel): ")).strip()
             if not grp_name:
                 return None
-            try:
-                new_grp = ynab_client.create_category_group(budget_id, grp_name)
-            except Exception as e:
-                print(f"  Failed to create category group: {e}")
-                return None
+            new_grp = ynab_client.create_category_group(budget_id, grp_name)
             if not hasattr(new_grp, "categories") or new_grp.categories is None:
                 new_grp.categories = []
             category_groups.append(new_grp)
@@ -359,11 +355,7 @@ def _create_new_category(
         else:
             print(f"  Unrecognized: {raw!r}")
 
-    try:
-        new_cat = ynab_client.create_category(budget_id, name, chosen_group.id)
-    except Exception as e:
-        print(f"  Failed to create category: {e}")
-        return None
+    new_cat = ynab_client.create_category(budget_id, name, chosen_group.id)
 
     if chosen_group.categories is None:
         chosen_group.categories = []
@@ -770,29 +762,10 @@ def sync_transactions(
     if tx_store is None:
         tx_store = TransactionsStore()
 
-    try:
-        fw_txns = fw_client.get_transactions()
-    except Exception as e:
-        print(f"Failed to fetch FinWise transactions: {e}")
-        return
-
-    try:
-        ynab_txns = ynab_client.get_transactions(budget_id)
-    except Exception as e:
-        print(f"Failed to fetch YNAB transactions: {e}")
-        return
-
-    try:
-        ynab_categories = ynab_client.get_categories(budget_id)
-    except Exception as e:
-        print(f"Failed to fetch YNAB categories: {e}")
-        ynab_categories = []
-
-    try:
-        category_groups = ynab_client.get_category_groups_with_categories(budget_id)
-    except Exception as e:
-        print(f"Failed to fetch YNAB category groups: {e}")
-        category_groups = []
+    fw_txns = fw_client.get_transactions()
+    ynab_txns = ynab_client.get_transactions(budget_id)
+    ynab_categories = ynab_client.get_categories(budget_id)
+    category_groups = ynab_client.get_category_groups_with_categories(budget_id)
 
     candidates = merge_and_filter_transactions(fw_txns, ynab_txns, store, tx_store)
     candidates.sort(key=_sort_key(store))

@@ -1031,5 +1031,56 @@ class TestPendingQueueFlushPassesImportId(unittest.TestCase):
         self.assertEqual(txn.import_id, "stable-uuid")
 
 
+class TestFailLoudFlush(unittest.TestCase):
+    """A YNAB API exception during flush must propagate so the user sees
+    the traceback and a non-zero exit. Silently swallowing was the
+    behaviour that caused a categorize-everything-then-nothing-in-YNAB
+    bug previously."""
+
+    def test_flush_exception_propagates(self):
+        from finab.transactions import _PendingQueue
+        q = _PendingQueue()
+        q.add(MagicMock(ynab_id=None, import_id="x"))
+        ynab_client = MagicMock()
+        ynab_client.create_transactions.side_effect = RuntimeError("YNAB 500")
+        with self.assertRaises(RuntimeError) as cm:
+            q.flush(ynab_client, "bid")
+        self.assertIn("YNAB 500", str(cm.exception))
+
+
+class TestFailLoudSyncTransactionsFetch(unittest.TestCase):
+    """A fetch failure during sync_transactions must propagate."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.config_path = Path(self.tmpdir.name) / "config.json"
+        self.store = ConfigStore(self.config_path)
+        self.store.add_account(
+            alias="Checking",
+            fw_record={"id": "fw-acc"},
+            ynab_record={"id": "yn-acc", "transfer_payee_id": "tp-1"},
+        )
+        self.store = ConfigStore(self.config_path)
+        self.fw_client = MagicMock()
+        self.ynab_client = MagicMock()
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_fw_get_transactions_failure_propagates(self):
+        from finab.transactions import sync_transactions
+        self.fw_client.get_transactions.side_effect = RuntimeError("FW down")
+        with self.assertRaises(RuntimeError):
+            sync_transactions(self.fw_client, self.ynab_client, "bid", self.store)
+
+    def test_ynab_get_categories_failure_propagates(self):
+        from finab.transactions import sync_transactions
+        self.fw_client.get_transactions.return_value = []
+        self.ynab_client.get_transactions.return_value = []
+        self.ynab_client.get_categories.side_effect = RuntimeError("YNAB down")
+        with self.assertRaises(RuntimeError):
+            sync_transactions(self.fw_client, self.ynab_client, "bid", self.store)
+
+
 if __name__ == "__main__":
     unittest.main()

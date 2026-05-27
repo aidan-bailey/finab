@@ -167,10 +167,7 @@ def _record_merchant_alias(
         store.attach_finwise_to_merchant(existing["id"], fw_record)
         return
 
-    try:
-        ynab_payees = ynab_client.get_payees(budget_id)
-    except Exception:
-        ynab_payees = []
+    ynab_payees = ynab_client.get_payees(budget_id)
 
     # 2. Account-as-transfer: alias matches one of the user's own accounts.
     if _link_account_transfer_payee(store, ynab_payees, alias, fw_record):
@@ -190,18 +187,12 @@ def _record_merchant_alias(
         return
 
     # 4. Create new YNAB payee
-    try:
-        new_payee = ynab_client.create_payee(budget_id, alias)
-        store.add_merchant(
-            alias=alias,
-            fw_record=fw_record,
-            ynab_record=to_dict(new_payee),
-        )
-    except Exception as e:
-        print(f"Failed to create YNAB payee '{alias}': {e}")
-        # Fall back to an empty ynab record so the FW id is at least
-        # captured; user can resolve via a Phase 2 re-run.
-        store.add_merchant(alias=alias, fw_record=fw_record, ynab_record={})
+    new_payee = ynab_client.create_payee(budget_id, alias)
+    store.add_merchant(
+        alias=alias,
+        fw_record=fw_record,
+        ynab_record=to_dict(new_payee),
+    )
 
 
 def _extract_distinct_merchants(fw_transactions) -> list[dict]:
