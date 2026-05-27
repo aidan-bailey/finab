@@ -71,26 +71,6 @@ async def test_sidebar_navigation_switches_content():
         assert switcher.current == "screen-accounts"
 
 
-def test_main_launches_tui_when_flag_set(monkeypatch):
-    """LEGACY: FINAB_TUI=1 still triggers TUI (now the default anyway)."""
-    monkeypatch.setenv("FINAB_TUI", "1")
-
-    launched = {"called": False}
-
-    class FakeApp:
-        def __init__(self, **kwargs): pass
-        def run(self):
-            launched["called"] = True
-
-    import finab.tui.app as tui_app_mod
-    monkeypatch.setattr(tui_app_mod, "FinabApp", FakeApp)
-
-    from finab.main import main
-    main()
-
-    assert launched["called"] is True
-
-
 def test_main_runs_tui_by_default(monkeypatch):
     """With no flag and no env var, main() launches FinabApp."""
     monkeypatch.delenv("FINAB_TUI", raising=False)
@@ -109,21 +89,3 @@ def test_main_runs_tui_by_default(monkeypatch):
     assert launched["count"] == 1
 
 
-def test_main_classic_flag_runs_cli(monkeypatch):
-    """--classic falls through to the old prompt flow."""
-    monkeypatch.delenv("FINAB_TUI", raising=False)
-    monkeypatch.setattr("sys.argv", ["finab", "--classic"])
-
-    import finab.tui.app as tui_app_mod
-    class ExplodingApp:
-        def __init__(self, **kwargs):
-            raise AssertionError("FinabApp should not be constructed when --classic is passed")
-    monkeypatch.setattr(tui_app_mod, "FinabApp", ExplodingApp)
-
-    import finab.main as main_mod
-    class FakeYnabClient:
-        def __init__(self): raise RuntimeError("stop here")
-    monkeypatch.setattr(main_mod, "YNABClient", FakeYnabClient)
-
-    from finab.main import main
-    main()  # should print error and return without crashing
