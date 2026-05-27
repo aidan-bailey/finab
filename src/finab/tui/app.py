@@ -6,6 +6,7 @@ on that data; placeholder screens don't care.
 """
 from textual import work
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.widgets import ContentSwitcher, Footer, Label, ListItem, ListView
 
@@ -31,12 +32,17 @@ class FinabApp(App):
     CSS_PATH = "styles.tcss"
 
     BINDINGS = [
-        ("q", "quit", "Quit"),
+        ("q", "quit_with_confirm", "Quit"),
         ("c", "sync_category", "Category"),
         ("s", "sync_split", "Split"),
         ("r", "sync_history", "Repeat history"),
+        ("t", "sync_force_transfer", "Force transfer"),
         ("u", "sync_undo", "Undo"),
         ("f", "sync_flush", "Flush"),
+        Binding("enter", "sync_repeat_closest", "Repeat closest", priority=True),
+        ("g", "sync_top", "Top"),
+        ("G", "sync_bottom", "Bottom"),
+        ("question_mark", "show_help", "Help"),
     ]
 
     def __init__(self, *, fw_client=None, ynab_client=None, budget_id: str = None, store=None, tx_store=None):
@@ -120,3 +126,31 @@ class FinabApp(App):
         if self._sync_screen_active():
             from finab.tui.screens.sync import SyncScreen
             self.query_one(SyncScreen).action_flush()
+
+    def action_sync_repeat_closest(self) -> None:
+        if self._sync_screen_active():
+            from finab.tui.screens.sync import SyncScreen
+            self.query_one(SyncScreen).action_repeat_closest()
+
+    def action_sync_force_transfer(self) -> None:
+        if self._sync_screen_active():
+            from finab.tui.screens.sync import SyncScreen
+            self.query_one(SyncScreen).action_force_transfer()
+
+    def action_sync_top(self) -> None:
+        if self._sync_screen_active():
+            from finab.tui.screens.sync import SyncScreen
+            self.query_one(SyncScreen).action_top()
+
+    def action_sync_bottom(self) -> None:
+        if self._sync_screen_active():
+            from finab.tui.screens.sync import SyncScreen
+            self.query_one(SyncScreen).action_bottom()
+
+    def action_quit_with_confirm(self) -> None:
+        # Filled in by Task 4. For now, behave like the old quit.
+        self.exit()
+
+    def action_show_help(self) -> None:
+        # Filled in by Task 5. For now, no-op.
+        pass

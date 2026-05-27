@@ -172,13 +172,7 @@ class SyncScreen(Container):
             if result is None:
                 return
             _amount_key, entry = result
-            # NOTE: this bypasses the engine and mutates txn directly. Means
-            # undo won't work for these decisions. Documented gap — Plan 3
-            # should add SyncEngine.apply_history(candidate_id, entry) that
-            # snapshots prior state properly.
-            from finab.engine.sync import _apply_processing_to_txn
-            _apply_processing_to_txn(entry, c.txn)
-            c.status = "decided"
+            self._engine.apply_history(c.id, entry=entry)
             self._refresh_after_decision(c.id)
 
         self.app.push_screen(modal, callback=_on_picked)
@@ -213,6 +207,60 @@ class SyncScreen(Container):
         pl = self.query_one("#sync-pending", PendingList)
         for c in pl.candidates:
             pl.refresh_row(c.id)
+
+    def action_repeat_closest(self) -> None:
+        """Apply the closest-amount processing entry for the merchant
+        of the current candidate. No-op if no merchant or no processings."""
+        c = self._current_candidate()
+        if c is None or self._engine is None:
+            return
+        merchant_id = getattr(c.txn, "merchant_id", None)
+        if not merchant_id:
+            self.app.bell()
+            return
+        merchant = self._store.merchant_by_finwise_id(merchant_id)
+        if not merchant:
+            self.app.bell()
+            return
+        from finab.engine.sync import _closest_processing
+        closest = _closest_processing(merchant, c.txn)
+        if closest is None:
+            self.app.bell()
+            return
+        _, entry = closest
+        self._engine.apply_history(c.id, entry=entry)
+        self._refresh_after_decision(c.id)
+
+    def action_force_transfer(self) -> None:
+        """Open AccountLinkPicker; selected account's transfer_payee_id
+        is passed to engine.apply_transfer."""
+        c = self._current_candidate()
+        if c is None or self._engine is None or self._store is None:
+            return
+        from finab.tui.widgets.account_link_picker import AccountLinkPicker
+        modal = AccountLinkPicker(store=self._store, title="Force transfer to which account?")
+
+        def _on_picked(transfer_payee_id):
+            if transfer_payee_id is None:
+                return
+            self._engine.apply_transfer(c.id, transfer_payee_id=transfer_payee_id)
+            self._refresh_after_decision(c.id)
+
+        self.app.push_screen(modal, callback=_on_picked)
+
+    def action_top(self) -> None:
+        pl = self.query_one("#sync-pending", PendingList)
+        if pl.candidates:
+            pl.index = 0
+            card = self.query_one("#sync-detail", TransactionCard)
+            card.set_candidate(pl.current_candidate(), alias_of=self._alias_of)
+
+    def action_bottom(self) -> None:
+        pl = self.query_one("#sync-pending", PendingList)
+        if pl.candidates:
+            pl.index = len(pl.candidates) - 1
+            card = self.query_one("#sync-detail", TransactionCard)
+            card.set_candidate(pl.current_candidate(), alias_of=self._alias_of)
 
     def _refresh_after_decision(self, candidate_id: str) -> None:
         """After an engine.apply_*, rebuild the row and move cursor down one."""

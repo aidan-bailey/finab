@@ -287,3 +287,99 @@ async def test_f_calls_flush(tmp_path):
         await pilot.press("f")
         await pilot.pause()
         assert flushed["called"] is True
+
+
+@pytest.mark.asyncio
+async def test_pressing_enter_applies_closest_history(tmp_path):
+    """Enter on a candidate with a closest-amount history entry should
+    apply it via engine.apply_history."""
+    from datetime import date as date_cls
+    from finab.models import Transaction
+    from finab.store import ConfigStore
+    from finab.transactions import TransactionsStore
+    from finab.tui.app import FinabApp
+    from finab.tui.data_loader import LoadedData
+    from finab.tui.screens.sync import SyncScreen
+    from finab.tui.widgets.pending_list import PendingList
+
+    store = ConfigStore(tmp_path / "config.json")
+    store.add_account(
+        alias="Chase",
+        fw_record={"id": "fw-acc-1", "name": "Chase", "type": "checking", "balance": 0, "currency_code": "USD"},
+        ynab_record={"id": "yn-acc-1", "name": "Chase", "type": "checking", "balance": 0, "transfer_payee_id": "yn-tpayee-1"},
+        ignore_transactions=False,
+    )
+    store.add_merchant(
+        alias="Costco",
+        fw_record={"id": "fw-merchant-2", "name": "Costco", "samples": []},
+        ynab_record={"id": "yn-pay-2", "name": "Costco", "transfer_account_id": None},
+    )
+    store.set_merchant_memory(
+        store.merchant_by_alias("Costco")["id"],
+        categories_used={"cat-groc": 3},
+        processings={"-8421": {"parent_memo": "x", "splits": [{"category_id": "cat-groc", "amount_milliunits": -8421, "memo": ""}]}},
+    )
+    tx_store = TransactionsStore(tmp_path / "transactions.json")
+    today = date_cls.today()
+    txn = Transaction(
+        import_id="fw-e1",
+        amount=-8421,
+        date=today,
+        memo="COSTCO",
+        merchant_id="fw-merchant-2",
+        account_id="fw-acc-1",
+    )
+    app = FinabApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        sync_screen = app.query_one(SyncScreen)
+        sync_screen.bind_data(loaded=LoadedData(fw_transactions=[txn]), store=store, tx_store=tx_store)
+        await pilot.pause()
+        pl = app.query_one("#sync-pending", PendingList)
+        if pl.index is None:
+            pl.index = 0
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        c = sync_screen._engine.candidates[0]
+        assert c.status == "decided"
+        assert str(c.txn.category_id) == "cat-groc"
+
+
+@pytest.mark.asyncio
+async def test_pressing_g_jumps_to_top(tmp_path):
+    """g moves the cursor to row 0."""
+    from datetime import date as date_cls
+    from finab.models import Transaction
+    from finab.store import ConfigStore
+    from finab.transactions import TransactionsStore
+    from finab.tui.app import FinabApp
+    from finab.tui.data_loader import LoadedData
+    from finab.tui.screens.sync import SyncScreen
+    from finab.tui.widgets.pending_list import PendingList
+
+    store = ConfigStore(tmp_path / "config.json")
+    store.add_account(
+        alias="Chase",
+        fw_record={"id": "fw-acc-1", "name": "Chase", "type": "checking", "balance": 0, "currency_code": "USD"},
+        ynab_record={"id": "yn-acc-1", "name": "Chase", "type": "checking", "balance": 0, "transfer_payee_id": "yn-tpayee-1"},
+        ignore_transactions=False,
+    )
+    tx_store = TransactionsStore(tmp_path / "transactions.json")
+    today = date_cls.today()
+    txns = [
+        Transaction(import_id=f"fw-g{i}", amount=-1000-i, date=today, memo=f"M{i}", merchant_id=None, account_id="fw-acc-1")
+        for i in range(3)
+    ]
+    app = FinabApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        sync_screen = app.query_one(SyncScreen)
+        sync_screen.bind_data(loaded=LoadedData(fw_transactions=txns), store=store, tx_store=tx_store)
+        await pilot.pause()
+        pl = app.query_one("#sync-pending", PendingList)
+        pl.index = 2
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        assert pl.index == 0

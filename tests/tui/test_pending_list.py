@@ -52,3 +52,24 @@ async def test_pending_list_renders_candidates():
         assert rows[2][0] == "+"
         assert "Salary" in rows[2][1]
         assert "1500.00" in rows[2][1]
+
+
+@pytest.mark.asyncio
+async def test_pending_list_warning_glyph():
+    """A candidate with warnings gets the ⚠ glyph regardless of status."""
+    from textual.app import App
+    from finab.tui.widgets.pending_list import PendingList
+
+    candidates = [_make_candidate(alias="Costco", amount=-50000, status="pending")]
+    candidates[0].warnings = ["fake warning"]
+
+    class _Host(App):
+        def compose(self):
+            yield PendingList(candidates=candidates, alias_of=lambda c: c.txn._alias, id="pl")
+
+    app = _Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        pl = app.query_one("#pl", PendingList)
+        rows = pl.row_glyphs_and_text()
+        assert rows[0][0] == "⚠"  # warning glyph wins over status

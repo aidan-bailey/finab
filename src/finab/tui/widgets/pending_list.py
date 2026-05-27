@@ -24,7 +24,11 @@ _GLYPHS = {
 
 
 def _glyph_for(candidate: Candidate) -> str:
-    """Pick the row glyph from candidate.status + candidate.auto_reason."""
+    """Pick the row glyph from candidate.status + candidate.auto_reason.
+    Warnings override status — a candidate with any warning shows ⚠.
+    """
+    if candidate.warnings:
+        return "⚠"
     key_specific = (candidate.status, candidate.auto_reason)
     if key_specific in _GLYPHS:
         return _GLYPHS[key_specific]

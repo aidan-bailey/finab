@@ -51,4 +51,8 @@ class TransactionCard(Static):
             f"Memo:      {memo}",
             f"Status:    {status_label}",
         ]
+        if candidate.warnings:
+            lines.append("")
+            for w in candidate.warnings:
+                lines.append(f"⚠ {w}")
         self.update("\n".join(lines))
