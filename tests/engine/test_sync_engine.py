@@ -4,10 +4,15 @@ These exercise the headless state machine — no Textual, no client calls.
 SyncEngine.flush is tested separately with a stub client.
 """
 from dataclasses import is_dataclass
+from pathlib import Path
+from typing import Optional
 
 import pytest
 
-from finab.engine.sync import Candidate
+from finab.engine.sync import Candidate, SyncEngine
+from finab.models import Transaction
+from finab.store import ConfigStore
+from finab.transactions import TransactionsStore
 
 
 class TestCandidate:
@@ -26,19 +31,22 @@ class TestCandidate:
         assert c.auto_reason == "inflow"
 
 
-from pathlib import Path
-
-from finab.engine.sync import SyncEngine
-from finab.models import Transaction
-from finab.store import ConfigStore
-from finab.transactions import TransactionsStore
+class _FakeCategory:
+    """Minimal stub matching the YNAB SDK Category shape used by
+    _find_inflow_category. Only `id`, `name`, `hidden`, `deleted` are read.
+    """
+    def __init__(self, id, name, *, hidden=False, deleted=False):
+        self.id = id
+        self.name = name
+        self.hidden = hidden
+        self.deleted = deleted
 
 
 def _build_txn(
     *,
     fw_uuid: str,
     amount: int,
-    merchant_id: str = None,
+    merchant_id: Optional[str] = None,
     account_id: str,
     date_str: str = "2026-05-22",
     memo: str = "test",
@@ -86,17 +94,13 @@ class TestSyncEngineLoad:
     def test_inflow_sets_status_auto(self, tmp_path):
         """A positive-amount transaction should auto-resolve when an
         'Inflow: Ready to Assign' category exists."""
-        # Stub category object — only `id`, `name`, `hidden`, `deleted` are read.
-        class FakeCategory:
-            def __init__(self, id, name):
-                self.id = id; self.name = name; self.hidden = False; self.deleted = False
         store = _seeded_store(tmp_path)
         tx_store = TransactionsStore(tmp_path / "transactions.json")
         txn = _build_txn(fw_uuid="fw-1", amount=12345, account_id="fw-acc-1")
         engine = SyncEngine(
             fw_transactions=[txn],
             ynab_transactions=[],
-            ynab_categories=[FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
             store=store,
             tx_store=tx_store,
         )
@@ -105,6 +109,29 @@ class TestSyncEngineLoad:
         assert c.status == "auto"
         assert c.auto_reason == "inflow"
         assert str(c.txn.category_id) == "cat-rta"
+
+    def test_inflow_with_no_category_falls_through(self, tmp_path):
+        """A positive-amount transaction with NO inflow category in YNAB
+        must fall through to the merchant-resolution logic rather than
+        silently auto-mark as inflow with a None category."""
+        store = _seeded_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        # Positive amount + no merchant + no inflow category → no-merchant auto.
+        txn = _build_txn(
+            fw_uuid="fw-pos-1", amount=99999,
+            account_id="fw-acc-1", merchant_id=None,
+        )
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],  # explicitly empty — no inflow category
+            store=store,
+            tx_store=tx_store,
+        )
+        c = engine.candidates[0]
+        assert c.status == "auto"
+        assert c.auto_reason == "no-merchant"  # fall-through landed here
+        assert c.txn.category_id is None
 
     def test_no_merchant_sets_status_auto(self, tmp_path):
         store = _seeded_store(tmp_path)
@@ -121,6 +148,41 @@ class TestSyncEngineLoad:
         c = engine.candidates[0]
         assert c.status == "auto"
         assert c.auto_reason == "no-merchant"
+
+    def test_transfer_sets_status_auto(self, tmp_path):
+        """A txn whose merchant is linked to an account (transfer_account_id
+        set on the merchant's YNAB record) should auto-resolve as transfer."""
+        from datetime import date as date_cls
+        store = _seeded_store(tmp_path)
+        # Add a merchant whose YNAB record IS a transfer payee.
+        store.add_merchant(
+            alias="Self → Savings",
+            fw_record={"id": "fw-merchant-transfer", "name": "Self → Savings", "samples": []},
+            ynab_record={
+                "id": "yn-pay-transfer",
+                "name": "Transfer: Savings",
+                "transfer_account_id": "yn-savings-acc",
+            },
+        )
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        today = date_cls.today()
+        txn = _build_txn(
+            fw_uuid="fw-transfer", amount=-25000,
+            account_id="fw-acc-1", merchant_id="fw-merchant-transfer",
+            date_str=f"{today.year:04d}-{today.month:02d}-{today.day:02d}",
+        )
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        c = engine.candidates[0]
+        assert c.status == "auto"
+        assert c.auto_reason == "transfer"
+        assert c.txn.payee_id == "yn-pay-transfer"
+        assert c.txn.category_id is None
 
     def test_unknown_account_is_dropped_by_dedup(self, tmp_path):
         """merge_and_filter_transactions drops txns whose account isn't
