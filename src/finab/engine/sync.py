@@ -656,3 +656,31 @@ class SyncEngine:
         c.txn.memo = snap["memo"]
         c.prior_state = None
         c.status = "pending"
+
+    def flush(self, ynab_client, budget_id: str) -> None:
+        """Push all decided + auto candidates to YNAB.
+
+        Two batches: creates (no ynab_id) and updates (has ynab_id).
+        Each batch's candidates are marked 'flushed' only after that
+        batch's API call returns success — a partial failure (creates
+        OK then updates raise) leaves the pre-failure batch flushed
+        and the failing batch still 'decided' for retry.
+
+        Raises on API failure (no swallowing).
+        """
+        # Snapshot which candidates we're attempting in this flush.
+        pushable = [
+            c for c in self.candidates
+            if c.status in ("decided", "auto")
+        ]
+        creates = [c for c in pushable if not getattr(c.txn, "ynab_id", None)]
+        updates = [c for c in pushable if getattr(c.txn, "ynab_id", None)]
+
+        if creates:
+            ynab_client.create_transactions(budget_id, [c.txn for c in creates])
+            for c in creates:
+                c.status = "flushed"
+        if updates:
+            ynab_client.update_transactions(budget_id, [c.txn for c in updates])
+            for c in updates:
+                c.status = "flushed"

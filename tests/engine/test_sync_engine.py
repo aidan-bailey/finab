@@ -488,3 +488,112 @@ class TestUndo:
         assert c.status == "auto"
         with pytest.raises(ValueError, match="cannot undo"):
             engine.undo(c.id)
+
+
+class _FakeYnabClient:
+    """Tracks calls to create_transactions / update_transactions."""
+
+    def __init__(self, fail_on=None):
+        self.created = []  # list of lists
+        self.updated = []
+        self.fail_on = fail_on  # "create" or "update" to simulate failure
+
+    def create_transactions(self, budget_id, txns):
+        if self.fail_on == "create":
+            raise RuntimeError("simulated create failure")
+        self.created.append(list(txns))
+
+    def update_transactions(self, budget_id, txns):
+        if self.fail_on == "update":
+            raise RuntimeError("simulated update failure")
+        self.updated.append(list(txns))
+
+
+class TestFlush:
+    def _setup_engine_with_decisions(self, tmp_path, *, with_existing_ynab_id=False):
+        from datetime import date as date_cls
+        store = _seeded_store(tmp_path)
+        store.add_merchant(
+            alias="Costco",
+            fw_record={"id": "fw-merchant-2", "name": "Costco", "samples": []},
+            ynab_record={"id": "yn-pay-2", "name": "Costco", "transfer_account_id": None},
+        )
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        today = date_cls.today()
+        txn = _build_txn(
+            fw_uuid="fw-10", amount=-8421,
+            account_id="fw-acc-1", merchant_id="fw-merchant-2",
+            date_str=f"{today.year:04d}-{today.month:02d}-{today.day:02d}",
+        )
+        if with_existing_ynab_id:
+            txn.ynab_id = "yn-existing-123"
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        c = engine.candidates[0]
+        engine.apply_category(c.id, category_id="cat-groc")
+        return engine, c
+
+    def test_flush_pushes_creates(self, tmp_path):
+        engine, c = self._setup_engine_with_decisions(tmp_path)
+        client = _FakeYnabClient()
+        engine.flush(client, budget_id="bid")
+        assert len(client.created) == 1
+        assert client.created[0][0] is c.txn
+        assert client.updated == []
+        assert c.status == "flushed"
+
+    def test_flush_pushes_updates(self, tmp_path):
+        engine, c = self._setup_engine_with_decisions(tmp_path, with_existing_ynab_id=True)
+        client = _FakeYnabClient()
+        engine.flush(client, budget_id="bid")
+        assert len(client.updated) == 1
+        assert client.updated[0][0] is c.txn
+        assert client.created == []
+        assert c.status == "flushed"
+
+    def test_flush_skips_pending_and_flushed(self, tmp_path):
+        """pending candidates and already-flushed ones aren't pushed."""
+        from datetime import date as date_cls
+        store = _seeded_store(tmp_path)
+        store.add_merchant(
+            alias="Costco",
+            fw_record={"id": "fw-merchant-2", "name": "Costco", "samples": []},
+            ynab_record={"id": "yn-pay-2", "name": "Costco", "transfer_account_id": None},
+        )
+        store.add_merchant(
+            alias="Amazon",
+            fw_record={"id": "fw-merchant-3", "name": "Amazon", "samples": []},
+            ynab_record={"id": "yn-pay-3", "name": "Amazon", "transfer_account_id": None},
+        )
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        today = date_cls.today()
+        d = f"{today.year:04d}-{today.month:02d}-{today.day:02d}"
+        txn_decided = _build_txn(fw_uuid="fw-11", amount=-1000, account_id="fw-acc-1", merchant_id="fw-merchant-2", date_str=d)
+        txn_pending = _build_txn(fw_uuid="fw-12", amount=-2000, account_id="fw-acc-1", merchant_id="fw-merchant-3", date_str=d)
+        engine = SyncEngine(
+            fw_transactions=[txn_decided, txn_pending],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        # Decide one, leave the other pending.
+        engine.apply_category(engine.candidates[0].id, category_id="cat-x")
+        client = _FakeYnabClient()
+        engine.flush(client, budget_id="bid")
+        assert len(client.created[0]) == 1  # only the decided one
+        # Second flush is a no-op (decided one is now flushed, other is still pending).
+        engine.flush(client, budget_id="bid")
+        assert len(client.created) == 1   # no new batches
+
+    def test_flush_failure_leaves_candidates_in_pre_flush_state(self, tmp_path):
+        engine, c = self._setup_engine_with_decisions(tmp_path)
+        client = _FakeYnabClient(fail_on="create")
+        with pytest.raises(RuntimeError, match="simulated"):
+            engine.flush(client, budget_id="bid")
+        assert c.status == "decided"  # not flushed
