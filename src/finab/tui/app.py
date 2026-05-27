@@ -11,6 +11,7 @@ from textual.containers import Horizontal
 from textual.widgets import ContentSwitcher, Footer, Label, ListItem, ListView
 
 from finab.tui.data_loader import LoadedData, load_all
+from finab.tui.screens.accounts import AccountsScreen
 from finab.tui.screens.placeholder import PlaceholderScreen
 from finab.tui.screens.sync import SyncScreen
 from finab.tui.widgets.error_banner import ErrorBanner
@@ -44,6 +45,9 @@ class FinabApp(App):
         ("g", "sync_top", "Top"),
         ("G", "sync_bottom", "Bottom"),
         ("question_mark", "show_help", "Help"),
+        ("a", "accounts_rename", "Rename"),
+        ("l", "accounts_relink", "Relink"),
+        ("i", "accounts_toggle_ignore", "Toggle ignore"),
     ]
 
     def __init__(self, *, fw_client=None, ynab_client=None, budget_id: str = None, store=None, tx_store=None):
@@ -66,7 +70,8 @@ class FinabApp(App):
             )
             with ContentSwitcher(initial="screen-sync", id="content-switcher"):
                 yield SyncScreen(id="screen-sync")
-                for name, sid in SCREEN_IDS[1:]:  # skip Sync (already yielded above)
+                yield AccountsScreen(id="screen-accounts")
+                for name, sid in SCREEN_IDS[2:]:  # skip Sync + Accounts
                     yield PlaceholderScreen(name, id=sid)
         yield Footer()
 
@@ -76,6 +81,12 @@ class FinabApp(App):
         get a TUI shell with no data, which is fine."""
         if self._fw_client and self._ynab_client and self._budget_id:
             self._kickoff_load()
+        elif self._store is not None:
+            try:
+                accounts_screen = self.query_one(AccountsScreen)
+                accounts_screen.bind_data(store=self._store)
+            except Exception:
+                pass
 
     def _render_error_banner(self) -> None:
         """Update the error banner from self.loaded.error (if any)."""
@@ -104,6 +115,8 @@ class FinabApp(App):
                 store=self._store,
                 tx_store=self._tx_store,
             )
+            accounts_screen = self.query_one(AccountsScreen)
+            accounts_screen.bind_data(store=self._store)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.item is None:
@@ -160,6 +173,23 @@ class FinabApp(App):
         if self._sync_screen_active():
             from finab.tui.screens.sync import SyncScreen
             self.query_one(SyncScreen).action_bottom()
+
+    def _accounts_screen_active(self) -> bool:
+        from textual.widgets import ContentSwitcher
+        switcher = self.query_one("#content-switcher", ContentSwitcher)
+        return switcher.current == "screen-accounts"
+
+    def action_accounts_rename(self) -> None:
+        if self._accounts_screen_active():
+            self.query_one(AccountsScreen).action_rename()
+
+    def action_accounts_relink(self) -> None:
+        if self._accounts_screen_active():
+            self.query_one(AccountsScreen).action_relink()
+
+    def action_accounts_toggle_ignore(self) -> None:
+        if self._accounts_screen_active():
+            self.query_one(AccountsScreen).action_toggle_ignore()
 
     def action_quit_with_confirm(self) -> None:
         """Quit, but if Sync has decided-but-not-flushed candidates,

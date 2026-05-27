@@ -150,3 +150,13 @@ AccountLinkPicker {
     text-style: bold;
     padding-bottom: 1;
 }
+
+AccountsScreen {
+    width: 1fr;
+    height: 1fr;
+    padding: 1 2;
+}
+
+#accounts-list {
+    height: 1fr;
+}
