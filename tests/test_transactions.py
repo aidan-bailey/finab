@@ -422,32 +422,33 @@ class TestCollectSplits(unittest.TestCase):
         self.assertIsNone(result)
 
 
-from finab.transactions import _can_repeat, _apply_repeat
+from finab.transactions import _closest_processing, _apply_repeat
 
 
 class TestRepeatHelpers(unittest.TestCase):
-    def test_can_repeat_when_amount_in_processings(self):
+    def test_closest_exact_match(self):
         merchant = {"processings": {"-1000": {"parent_memo": "", "splits": []}}}
-        txn = MagicMock(amount=-1000)
-        self.assertTrue(_can_repeat(merchant, txn))
+        result = _closest_processing(merchant, MagicMock(amount=-1000))
+        self.assertEqual(result[0], "-1000")
 
-    def test_can_repeat_finds_any_matching_amount(self):
+    def test_closest_picks_nearest_by_absolute_diff(self):
         merchant = {"processings": {
             "-1000": {"parent_memo": "", "splits": []},
             "-5000": {"parent_memo": "", "splits": []},
+            "-10000": {"parent_memo": "", "splits": []},
         }}
-        self.assertTrue(_can_repeat(merchant, MagicMock(amount=-1000)))
-        self.assertTrue(_can_repeat(merchant, MagicMock(amount=-5000)))
+        # -3000 is closer to -1000 (|2000|) than -5000 (|2000|) — tie goes to insertion order
+        self.assertEqual(_closest_processing(merchant, MagicMock(amount=-3000))[0], "-1000")
+        # -4000 is closer to -5000 (|1000|) than to -1000 (|3000|)
+        self.assertEqual(_closest_processing(merchant, MagicMock(amount=-4000))[0], "-5000")
+        # -8000 closest to -10000
+        self.assertEqual(_closest_processing(merchant, MagicMock(amount=-8000))[0], "-10000")
 
-    def test_can_not_repeat_when_amount_not_in_processings(self):
-        merchant = {"processings": {"-1000": {"parent_memo": "", "splits": []}}}
-        self.assertFalse(_can_repeat(merchant, MagicMock(amount=-2000)))
+    def test_closest_returns_none_when_no_processings(self):
+        self.assertIsNone(_closest_processing({}, MagicMock(amount=-1000)))
+        self.assertIsNone(_closest_processing({"processings": {}}, MagicMock(amount=-1000)))
 
-    def test_can_not_repeat_when_no_processings(self):
-        self.assertFalse(_can_repeat({}, MagicMock(amount=-1000)))
-        self.assertFalse(_can_repeat({"processings": {}}, MagicMock(amount=-1000)))
-
-    def test_apply_repeat_single_category(self):
+    def test_apply_repeat_single_category_exact(self):
         merchant = {"processings": {
             "-1000": {
                 "parent_memo": "",
@@ -463,7 +464,23 @@ class TestRepeatHelpers(unittest.TestCase):
         self.assertEqual(txn.subtransactions, [])
         self.assertEqual(txn.memo, "finwise desc")
 
-    def test_apply_repeat_split(self):
+    def test_apply_repeat_single_category_when_amount_differs(self):
+        """Single-category entries replay the category regardless of
+        txn.amount, since there's nothing to scale."""
+        merchant = {"processings": {
+            "-1000": {
+                "parent_memo": "",
+                "splits": [
+                    {"category_id": "cat-A", "amount_milliunits": -1000, "memo": ""}
+                ],
+            }
+        }}
+        txn = MagicMock(amount=-2500)  # closest (and only) entry is -1000
+        txn.subtransactions = []
+        _apply_repeat(merchant, txn)
+        self.assertEqual(txn.category_id, "cat-A")
+
+    def test_apply_repeat_split_exact(self):
         merchant = {"processings": {
             "-1000": {
                 "parent_memo": "",
@@ -478,13 +495,31 @@ class TestRepeatHelpers(unittest.TestCase):
         _apply_repeat(merchant, txn)
         self.assertIsNone(txn.category_id)
         self.assertEqual(len(txn.subtransactions), 2)
-        self.assertEqual(txn.subtransactions[0]["category_id"], "cat-A")
         self.assertEqual(txn.subtransactions[0]["amount"], -600)
         self.assertEqual(txn.subtransactions[1]["amount"], -400)
 
-    def test_apply_repeat_picks_correct_entry_among_many(self):
-        """Multiple amounts in processings — apply uses the one matching
-        txn.amount specifically."""
+    def test_apply_repeat_scales_split_when_amount_differs(self):
+        """Multi-split entries scale to the current txn amount when the
+        closest prior amount differs."""
+        merchant = {"processings": {
+            "-1000": {
+                "parent_memo": "",
+                "splits": [
+                    {"category_id": "cat-A", "amount_milliunits": -600, "memo": ""},
+                    {"category_id": "cat-B", "amount_milliunits": -400, "memo": ""},
+                ],
+            }
+        }}
+        txn = MagicMock(amount=-5000)  # 5x the prior total
+        txn.subtransactions = []
+        _apply_repeat(merchant, txn)
+        self.assertEqual(txn.subtransactions[0]["amount"], -3000)
+        self.assertEqual(txn.subtransactions[1]["amount"], -2000)
+        self.assertEqual(
+            sum(s["amount"] for s in txn.subtransactions), txn.amount
+        )
+
+    def test_apply_repeat_picks_closest_among_many(self):
         merchant = {"processings": {
             "-1000": {
                 "parent_memo": "",
@@ -499,15 +534,48 @@ class TestRepeatHelpers(unittest.TestCase):
                 ],
             },
         }}
-        txn = MagicMock(amount=-5000, memo="")
+        txn = MagicMock(amount=-4500, memo="")  # closer to -5000
         txn.subtransactions = []
         _apply_repeat(merchant, txn)
         self.assertEqual(txn.category_id, "cat-B")
 
 
-from finab.transactions import _pick_from_processings, _apply_processing_to_txn
+from finab.transactions import _pick_from_processings, _apply_processing_to_txn, _render_splits
 from unittest.mock import patch
 import io
+
+
+class TestRenderSplits(unittest.TestCase):
+    def _cats(self):
+        def c(i, n):
+            m = MagicMock(id=i)
+            m.name = n
+            return m
+        return [c("cat-A", "Groceries"), c("cat-B", "Fuel")]
+
+    def test_single_split_returns_category_name(self):
+        entry = {"splits": [
+            {"category_id": "cat-A", "amount_milliunits": -1000, "memo": ""}
+        ]}
+        self.assertEqual(_render_splits(entry, self._cats()), "Groceries")
+
+    def test_multi_split_returns_amounts_and_names(self):
+        entry = {"splits": [
+            {"category_id": "cat-A", "amount_milliunits": -600, "memo": ""},
+            {"category_id": "cat-B", "amount_milliunits": -400, "memo": ""},
+        ]}
+        rendered = _render_splits(entry, self._cats())
+        self.assertIn("Groceries -0.60", rendered)
+        self.assertIn("Fuel -0.40", rendered)
+
+    def test_multi_split_scales_amounts(self):
+        entry = {"splits": [
+            {"category_id": "cat-A", "amount_milliunits": -600, "memo": ""},
+            {"category_id": "cat-B", "amount_milliunits": -400, "memo": ""},
+        ]}
+        rendered = _render_splits(entry, self._cats(), scale=5.0)
+        self.assertIn("Groceries -3.00", rendered)
+        self.assertIn("Fuel -2.00", rendered)
 
 
 class TestPickFromProcessings(unittest.TestCase):

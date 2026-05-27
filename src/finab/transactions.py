@@ -505,43 +505,43 @@ class _PendingQueue:
         return True
 
 
-def _can_repeat(merchant: dict, txn) -> bool:
-    """True iff merchant.processings has an entry for the current
-    transaction's exact amount. (Enter-repeat fires only on exact-amount
-    match.)"""
+def _closest_processing(merchant: dict, txn):
+    """Return (amount_key, entry) for the processing entry whose amount is
+    closest to txn.amount by absolute difference. Ties are broken by
+    insertion order (first wins). Returns None if there are no
+    processings or txn has no amount."""
     if not merchant:
-        return False
+        return None
     processings = merchant.get("processings") or {}
     if not processings:
-        return False
+        return None
     amt = getattr(txn, "amount", None)
     if amt is None:
-        return False
-    return str(amt) in processings
+        return None
+
+    best = None
+    best_diff = None
+    for k, entry in processings.items():
+        try:
+            k_amt = int(k)
+        except (TypeError, ValueError):
+            continue
+        diff = abs(k_amt - amt)
+        if best_diff is None or diff < best_diff:
+            best = (k, entry)
+            best_diff = diff
+    return best
 
 
 def _apply_repeat(merchant: dict, txn) -> None:
-    """Replay merchant.processings[str(txn.amount)] onto txn. Single-category
-    cases set txn.category_id; multi-split cases set txn.subtransactions.
-    Memos use fresh defaults (FinWise description for parent, empty for
-    splits) so the user doesn't inherit stale per-transaction notes."""
-    entry = merchant["processings"][str(txn.amount)]
-    splits = entry.get("splits", []) or []
-    if len(splits) == 1:
-        txn.category_id = splits[0]["category_id"]
-        txn.subtransactions = []
-    else:
-        txn.category_id = None
-        txn.subtransactions = [
-            {
-                "category_id": s["category_id"],
-                "amount": s["amount_milliunits"],
-                "memo": "",  # fresh default per spec
-            }
-            for s in splits
-        ]
-    # Parent memo: keep whatever txn.memo already is (it's the FinWise
-    # description by default after Transaction.from_finwise).
+    """Replay the closest-amount processing entry onto txn. Delegates to
+    _apply_processing_to_txn so multi-split entries scale to txn.amount.
+    Memos use fresh defaults; parent memo stays as the FinWise description."""
+    chosen = _closest_processing(merchant, txn)
+    if chosen is None:
+        return
+    _, entry = chosen
+    _apply_processing_to_txn(entry, txn)
 
 
 def _update_merchant_memory(store: ConfigStore, merchant: dict, txn) -> None:
@@ -602,6 +602,25 @@ def _category_name(categories, category_id: str) -> Optional[str]:
     return None
 
 
+def _render_splits(entry: dict, ynab_categories: list, scale: float = 1.0) -> str:
+    """Render a processing entry's splits as a human-readable summary.
+
+    Single split: just the category name.
+    Multi-split: comma-separated 'Category <amount>' pairs, optionally
+    scaled by `scale` (e.g. 2.0 when the current transaction is twice the
+    stored amount). Amounts shown in standard currency units, signed.
+    """
+    splits = entry.get("splits", []) or []
+    if len(splits) == 1:
+        return _category_name(ynab_categories, splits[0]["category_id"]) or "?"
+    parts = []
+    for s in splits:
+        cn = _category_name(ynab_categories, s["category_id"]) or "?"
+        amt = int(round(s["amount_milliunits"] * scale))
+        parts.append(f"{cn} {amt/1000:.2f}")
+    return ", ".join(parts)
+
+
 def _pick_from_processings(merchant: dict, txn, ynab_categories: list) -> bool:
     """Show merchant.processings as a numbered list of prior categorizations
     (each entry's amount + categories used). User picks one to apply to the
@@ -616,6 +635,8 @@ def _pick_from_processings(merchant: dict, txn, ynab_categories: list) -> bool:
         return False
 
     entries = list(processings.items())  # insertion order
+    closest = _closest_processing(merchant, txn)
+    closest_key = closest[0] if closest else None
 
     print()
     print(f"  {_bold('Prior categorizations for')} '{merchant.get('alias', '?')}':")
@@ -626,16 +647,13 @@ def _pick_from_processings(merchant: dict, txn, ynab_categories: list) -> bool:
         except (TypeError, ValueError):
             amt_str = f"{amt_key:>10}"
         splits = entry.get("splits", []) or []
+        rendered = _render_splits(entry, ynab_categories)
         if len(splits) == 1:
-            cat_name = _category_name(ynab_categories, splits[0]["category_id"]) or "?"
-            line = f"{amt_str}   {cat_name}"
+            line = f"{amt_str}   {rendered}"
         else:
-            parts = []
-            for s in splits:
-                cn = _category_name(ynab_categories, s["category_id"]) or "?"
-                parts.append(cn)
-            line = f"{amt_str}   split: {', '.join(parts)}"
-        print(f"   {i:>3}. {line}")
+            line = f"{amt_str}   split: {rendered}"
+        marker = f" {_dim('(closest)')}" if amt_key == closest_key else ""
+        print(f"   {i:>3}. {line}{marker}")
     print()
 
     while True:
@@ -770,17 +788,45 @@ def _process_one_transaction(
     print(f"  {_dim('Amount:')}    {amount_str}")
     print(f"  {_dim('Memo:')}      {getattr(txn, 'memo', '') or _dim('(none)')}")
 
-    repeat_available = _can_repeat(merchant, txn)
+    closest = _closest_processing(merchant, txn)
+    repeat_available = closest is not None
     if repeat_available:
-        entry = merchant["processings"][str(txn.amount)]
-        if len(entry["splits"]) == 1:
-            cat_id = entry["splits"][0]["category_id"]
-            cat_name = _category_name(ynab_categories, cat_id) or "?"
-            preview = f"{cat_name} {amount_str}"
+        closest_key, closest_entry = closest
+        try:
+            prior_amt = int(closest_key)
+        except (TypeError, ValueError):
+            prior_amt = txn.amount
+        prior_amt_str = f"{prior_amt/1000:.2f}"
+        splits = closest_entry.get("splits", []) or []
+        is_exact = prior_amt == txn.amount
+        if len(splits) == 1:
+            rendered = _render_splits(closest_entry, ynab_categories)
+            if is_exact:
+                preview = f"{rendered}  {_dim(f'(last: {prior_amt_str})')}"
+            else:
+                preview = (
+                    f"{rendered}  "
+                    f"{_dim(f'(last used at {prior_amt_str})')}"
+                )
         else:
-            preview = f"split into {len(entry['splits'])} categories"
+            if is_exact:
+                rendered = _render_splits(closest_entry, ynab_categories)
+                preview = f"split: {rendered}"
+            else:
+                # Multi-split with different amount: scale to current txn amount.
+                total_prior = sum(
+                    s["amount_milliunits"] for s in splits
+                ) or prior_amt or 1
+                scale = txn.amount / total_prior
+                rendered = _render_splits(
+                    closest_entry, ynab_categories, scale=scale
+                )
+                preview = (
+                    f"split {_dim(f'(scaled from {prior_amt_str})')}: "
+                    f"{rendered}"
+                )
         print()
-        print(f"  {_bold('[Enter]')} to repeat last: {preview}")
+        print(f"  {_bold('[Enter]')} to repeat: {preview}")
 
     print(f"  Or:")
     print(f"    {_dim('s)')} Split into multiple categories")
