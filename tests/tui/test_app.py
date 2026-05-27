@@ -72,7 +72,7 @@ async def test_sidebar_navigation_switches_content():
 
 
 def test_main_launches_tui_when_flag_set(monkeypatch):
-    """When FINAB_TUI=1, finab.main.main() should construct and run FinabApp."""
+    """LEGACY: FINAB_TUI=1 still triggers TUI (now the default anyway)."""
     monkeypatch.setenv("FINAB_TUI", "1")
 
     launched = {"called": False}
@@ -91,23 +91,39 @@ def test_main_launches_tui_when_flag_set(monkeypatch):
     assert launched["called"] is True
 
 
-def test_main_falls_through_to_cli_when_flag_unset(monkeypatch, capsys):
-    """When FINAB_TUI is unset, finab.main.main() does NOT touch FinabApp."""
+def test_main_runs_tui_by_default(monkeypatch):
+    """With no flag and no env var, main() launches FinabApp."""
     monkeypatch.delenv("FINAB_TUI", raising=False)
+    launched = {"count": 0}
+
+    class FakeApp:
+        def __init__(self, **kwargs): pass
+        def run(self): launched["count"] += 1
+
+    import finab.tui.app as tui_app_mod
+    monkeypatch.setattr(tui_app_mod, "FinabApp", FakeApp)
+    monkeypatch.setattr("sys.argv", ["finab"])
+
+    from finab.main import main
+    main()
+    assert launched["count"] == 1
+
+
+def test_main_classic_flag_runs_cli(monkeypatch):
+    """--classic falls through to the old prompt flow."""
+    monkeypatch.delenv("FINAB_TUI", raising=False)
+    monkeypatch.setattr("sys.argv", ["finab", "--classic"])
 
     import finab.tui.app as tui_app_mod
     class ExplodingApp:
-        def __init__(self):
-            raise AssertionError("FinabApp should not be constructed when FINAB_TUI is unset")
+        def __init__(self, **kwargs):
+            raise AssertionError("FinabApp should not be constructed when --classic is passed")
     monkeypatch.setattr(tui_app_mod, "FinabApp", ExplodingApp)
 
-    # The existing CLI flow tries to initialize YNAB client. Patch it to short-circuit.
     import finab.main as main_mod
     class FakeYnabClient:
-        def __init__(self): raise RuntimeError("stop here — flag was unset, CLI path taken")
+        def __init__(self): raise RuntimeError("stop here")
     monkeypatch.setattr(main_mod, "YNABClient", FakeYnabClient)
 
     from finab.main import main
-    main()  # Should print an error from FakeYnabClient and return without crashing
-    # The important thing is that ExplodingApp was NEVER constructed.
-    # No assertion needed beyond getting here without AssertionError.
+    main()  # should print error and return without crashing

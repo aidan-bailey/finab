@@ -390,8 +390,13 @@ def sync_merchants(
 
 
 def main():
-    import os
-    if os.environ.get("FINAB_TUI"):
+    import sys
+
+    # TUI is the default. Opt out with --classic. The legacy FINAB_TUI=1
+    # env var still works (it's ignored — TUI is default), so existing
+    # muscle memory doesn't break.
+    use_classic = "--classic" in sys.argv
+    if not use_classic:
         load_dotenv()
         from finab.transactions import TransactionsStore
         from finab.tui.app import FinabApp
@@ -404,10 +409,8 @@ def main():
         ).run()
         return
 
-    # --- existing CLI flow below ---
+    # --- classic CLI flow below (unchanged) ---
     load_dotenv()
-
-    import sys
 
     print("Hello from finab!")
 
