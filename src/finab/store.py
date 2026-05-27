@@ -58,6 +58,20 @@ class ConfigStore:
         os.replace(tmp, self.path)
 
     def _rebuild_indexes(self) -> None:
+        # One-shot migration: legacy merchant.last_processing -> processings.
+        migrated_any = False
+        for m in self._data.get("merchants", {}).values():
+            if "last_processing" in m and "processings" not in m:
+                lp = m.pop("last_processing")
+                key = str(lp.get("amount_milliunits"))
+                m["processings"] = {
+                    key: {
+                        "parent_memo": lp.get("parent_memo", ""),
+                        "splits": lp.get("splits", []),
+                    }
+                }
+                migrated_any = True
+
         self._fw_account_index: dict[str, str] = {}
         self._alias_account_index: dict[str, str] = {}
         self._fw_merchant_index: dict[str, str] = {}
@@ -75,6 +89,9 @@ class ConfigStore:
                 self._fw_merchant_index[fw_id] = m["id"]
             if m.get("alias"):
                 self._alias_merchant_index[normalize_alias(m["alias"])] = m["id"]
+
+        if migrated_any:
+            self._save()
 
     def accounts(self) -> Iterable[dict]:
         return self._data["accounts"].values()
@@ -158,12 +175,17 @@ class ConfigStore:
         self,
         merchant_id: str,
         categories_used: dict,
-        last_processing: dict,
+        processings: dict,
     ) -> None:
-        """Write the per-merchant categorization memory atomically."""
+        """Write the per-merchant categorization memory atomically.
+
+        `processings` is a dict keyed by str(amount_milliunits) holding
+        {parent_memo, splits} entries — one per distinct amount this
+        merchant has been categorized for.
+        """
         m = self._data["merchants"][merchant_id]
         m["categories_used"] = dict(categories_used)
-        m["last_processing"] = dict(last_processing)
+        m["processings"] = dict(processings)
         self._rebuild_indexes()
         self._save()
 

@@ -548,23 +548,27 @@ class _PendingQueue:
 
 
 def _can_repeat(merchant: dict, txn) -> bool:
-    """True iff the merchant has a last_processing whose amount equals
-    txn.amount exactly. (Enter-repeat fires only on exact-amount match.)"""
-    lp = merchant.get("last_processing") if merchant else None
-    if not lp:
+    """True iff merchant.processings has an entry for the current
+    transaction's exact amount. (Enter-repeat fires only on exact-amount
+    match.)"""
+    if not merchant:
         return False
-    stored = lp.get("amount_milliunits")
-    current = getattr(txn, "amount", None)
-    return stored is not None and current is not None and stored == current
+    processings = merchant.get("processings") or {}
+    if not processings:
+        return False
+    amt = getattr(txn, "amount", None)
+    if amt is None:
+        return False
+    return str(amt) in processings
 
 
 def _apply_repeat(merchant: dict, txn) -> None:
-    """Replay merchant.last_processing onto txn. Single-category cases set
-    txn.category_id; multi-split cases set txn.subtransactions. Memos use
-    fresh defaults (FinWise description for parent, empty for splits) so
-    the user doesn't inherit stale per-transaction notes."""
-    lp = merchant["last_processing"]
-    splits = lp.get("splits", []) or []
+    """Replay merchant.processings[str(txn.amount)] onto txn. Single-category
+    cases set txn.category_id; multi-split cases set txn.subtransactions.
+    Memos use fresh defaults (FinWise description for parent, empty for
+    splits) so the user doesn't inherit stale per-transaction notes."""
+    entry = merchant["processings"][str(txn.amount)]
+    splits = entry.get("splits", []) or []
     if len(splits) == 1:
         txn.category_id = splits[0]["category_id"]
         txn.subtransactions = []
@@ -584,8 +588,9 @@ def _apply_repeat(merchant: dict, txn) -> None:
 
 def _update_merchant_memory(store: ConfigStore, merchant: dict, txn) -> None:
     """Update the merchant's categories_used (frequency map) and
-    last_processing (split structure for Enter-repeat) based on the just-
-    categorized transaction. Persists via store.set_merchant_memory.
+    processings (dict of {str(amount): {parent_memo, splits}}) based on
+    the just-categorized transaction. Persists via
+    store.set_merchant_memory.
 
     Stringifies category_id values before storing — pickers may return
     UUID objects (from the YNAB SDK) and JSON can't serialize UUID dict
@@ -618,16 +623,17 @@ def _update_merchant_memory(store: ConfigStore, merchant: dict, txn) -> None:
         if cid:
             counts[cid] = counts.get(cid, 0) + 1
 
-    last_processing = {
-        "amount_milliunits": txn.amount,
+    new_entry = {
         "parent_memo": getattr(txn, "memo", "") or "",
         "splits": splits,
     }
+    processings = dict(merchant.get("processings", {}) or {})
+    processings[str(txn.amount)] = new_entry
 
     store.set_merchant_memory(
         merchant["id"],
         categories_used=counts,
-        last_processing=last_processing,
+        processings=processings,
     )
 
 
@@ -714,13 +720,13 @@ def _process_one_transaction(
 
     repeat_available = _can_repeat(merchant, txn)
     if repeat_available:
-        lp = merchant["last_processing"]
-        if len(lp["splits"]) == 1:
-            cat_id = lp["splits"][0]["category_id"]
+        entry = merchant["processings"][str(txn.amount)]
+        if len(entry["splits"]) == 1:
+            cat_id = entry["splits"][0]["category_id"]
             cat_name = _category_name(ynab_categories, cat_id) or "?"
             preview = f"{cat_name} {amount_str}"
         else:
-            preview = f"split into {len(lp['splits'])} categories"
+            preview = f"split into {len(entry['splits'])} categories"
         print()
         print(f"  {_bold('[Enter]')} to repeat last: {preview}")
 

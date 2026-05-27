@@ -245,17 +245,114 @@ class TestSetMerchantMemory(unittest.TestCase):
             ynab_record={"id": "yn-spar", "name": "Spar"},
         )
         cu = {"cat-1": 5, "cat-2": 1}
-        lp = {
-            "amount_milliunits": -10000,
-            "parent_memo": "supermarket",
-            "splits": [{"category_id": "cat-1", "amount_milliunits": -10000, "memo": ""}],
+        processings = {
+            "-10000": {
+                "parent_memo": "supermarket",
+                "splits": [{"category_id": "cat-1",
+                            "amount_milliunits": -10000, "memo": ""}],
+            }
         }
-        store.set_merchant_memory(m["id"], categories_used=cu, last_processing=lp)
+        store.set_merchant_memory(m["id"], categories_used=cu, processings=processings)
 
         store2 = ConfigStore(self.path)
         found = store2.merchant_by_finwise_id("fw-spar")
         self.assertEqual(found["categories_used"], cu)
-        self.assertEqual(found["last_processing"], lp)
+        self.assertEqual(found["processings"], processings)
+
+
+class TestMigrateLastProcessingToProcessings(unittest.TestCase):
+    """One-shot migration: legacy merchant.last_processing becomes a
+    single-entry merchant.processings on load via _rebuild_indexes."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmpdir.name) / "config.json"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_legacy_last_processing_migrates_to_processings(self):
+        legacy = {
+            "accounts": {},
+            "merchants": {
+                "m-1": {
+                    "id": "m-1",
+                    "alias": "Spar",
+                    "finwise": {},
+                    "ynab": {},
+                    "categories_used": {"cat-A": 3},
+                    "last_processing": {
+                        "amount_milliunits": -50000,
+                        "parent_memo": "groceries",
+                        "splits": [
+                            {"category_id": "cat-A",
+                             "amount_milliunits": -50000,
+                             "memo": ""}
+                        ],
+                    },
+                }
+            },
+        }
+        self.path.write_text(json.dumps(legacy))
+
+        store = ConfigStore(self.path)
+        m = store._data["merchants"]["m-1"]
+
+        self.assertNotIn("last_processing", m)
+        self.assertIn("processings", m)
+        self.assertIn("-50000", m["processings"])
+        self.assertEqual(m["processings"]["-50000"]["parent_memo"], "groceries")
+        self.assertEqual(
+            m["processings"]["-50000"]["splits"][0]["category_id"], "cat-A"
+        )
+
+    def test_already_migrated_is_idempotent(self):
+        already = {
+            "accounts": {},
+            "merchants": {
+                "m-1": {
+                    "id": "m-1",
+                    "alias": "Spar",
+                    "finwise": {},
+                    "ynab": {},
+                    "processings": {
+                        "-50000": {"parent_memo": "", "splits": []}
+                    },
+                }
+            },
+        }
+        self.path.write_text(json.dumps(already))
+
+        store = ConfigStore(self.path)
+        m = store._data["merchants"]["m-1"]
+        self.assertEqual(list(m["processings"].keys()), ["-50000"])
+        self.assertNotIn("last_processing", m)
+
+    def test_migration_persists_to_disk(self):
+        legacy = {
+            "accounts": {},
+            "merchants": {
+                "m-1": {
+                    "id": "m-1",
+                    "alias": "Spar",
+                    "finwise": {},
+                    "ynab": {},
+                    "last_processing": {
+                        "amount_milliunits": -50000,
+                        "parent_memo": "",
+                        "splits": [],
+                    },
+                }
+            },
+        }
+        self.path.write_text(json.dumps(legacy))
+
+        ConfigStore(self.path)
+
+        on_disk = json.loads(self.path.read_text())
+        m = on_disk["merchants"]["m-1"]
+        self.assertNotIn("last_processing", m)
+        self.assertIn("processings", m)
 
 
 if __name__ == "__main__":

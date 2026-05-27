@@ -392,46 +392,53 @@ from finab.transactions import _can_repeat, _apply_repeat
 
 
 class TestRepeatHelpers(unittest.TestCase):
-    def test_can_repeat_when_exact_amount_match(self):
-        merchant = {"last_processing": {"amount_milliunits": -1000, "splits": []}}
+    def test_can_repeat_when_amount_in_processings(self):
+        merchant = {"processings": {"-1000": {"parent_memo": "", "splits": []}}}
         txn = MagicMock(amount=-1000)
         self.assertTrue(_can_repeat(merchant, txn))
 
-    def test_can_not_repeat_when_amount_differs(self):
-        merchant = {"last_processing": {"amount_milliunits": -1000, "splits": []}}
-        txn = MagicMock(amount=-2000)
-        self.assertFalse(_can_repeat(merchant, txn))
+    def test_can_repeat_finds_any_matching_amount(self):
+        merchant = {"processings": {
+            "-1000": {"parent_memo": "", "splits": []},
+            "-5000": {"parent_memo": "", "splits": []},
+        }}
+        self.assertTrue(_can_repeat(merchant, MagicMock(amount=-1000)))
+        self.assertTrue(_can_repeat(merchant, MagicMock(amount=-5000)))
 
-    def test_can_not_repeat_when_no_last_processing(self):
+    def test_can_not_repeat_when_amount_not_in_processings(self):
+        merchant = {"processings": {"-1000": {"parent_memo": "", "splits": []}}}
+        self.assertFalse(_can_repeat(merchant, MagicMock(amount=-2000)))
+
+    def test_can_not_repeat_when_no_processings(self):
         self.assertFalse(_can_repeat({}, MagicMock(amount=-1000)))
+        self.assertFalse(_can_repeat({"processings": {}}, MagicMock(amount=-1000)))
 
     def test_apply_repeat_single_category(self):
-        lp = {
-            "amount_milliunits": -1000,
-            "parent_memo": "",
-            "splits": [
-                {"category_id": "cat-A", "amount_milliunits": -1000, "memo": ""}
-            ],
-        }
-        merchant = {"last_processing": lp}
+        merchant = {"processings": {
+            "-1000": {
+                "parent_memo": "",
+                "splits": [
+                    {"category_id": "cat-A", "amount_milliunits": -1000, "memo": ""}
+                ],
+            }
+        }}
         txn = MagicMock(amount=-1000, memo="finwise desc")
         txn.subtransactions = []
         _apply_repeat(merchant, txn)
         self.assertEqual(txn.category_id, "cat-A")
         self.assertEqual(txn.subtransactions, [])
-        # Memo stays as the FinWise description (default), per spec.
         self.assertEqual(txn.memo, "finwise desc")
 
     def test_apply_repeat_split(self):
-        lp = {
-            "amount_milliunits": -1000,
-            "parent_memo": "",
-            "splits": [
-                {"category_id": "cat-A", "amount_milliunits": -600, "memo": ""},
-                {"category_id": "cat-B", "amount_milliunits": -400, "memo": ""},
-            ],
-        }
-        merchant = {"last_processing": lp}
+        merchant = {"processings": {
+            "-1000": {
+                "parent_memo": "",
+                "splits": [
+                    {"category_id": "cat-A", "amount_milliunits": -600, "memo": ""},
+                    {"category_id": "cat-B", "amount_milliunits": -400, "memo": ""},
+                ],
+            }
+        }}
         txn = MagicMock(amount=-1000, memo="finwise desc")
         txn.subtransactions = []
         _apply_repeat(merchant, txn)
@@ -440,6 +447,28 @@ class TestRepeatHelpers(unittest.TestCase):
         self.assertEqual(txn.subtransactions[0]["category_id"], "cat-A")
         self.assertEqual(txn.subtransactions[0]["amount"], -600)
         self.assertEqual(txn.subtransactions[1]["amount"], -400)
+
+    def test_apply_repeat_picks_correct_entry_among_many(self):
+        """Multiple amounts in processings — apply uses the one matching
+        txn.amount specifically."""
+        merchant = {"processings": {
+            "-1000": {
+                "parent_memo": "",
+                "splits": [
+                    {"category_id": "cat-A", "amount_milliunits": -1000, "memo": ""}
+                ],
+            },
+            "-5000": {
+                "parent_memo": "",
+                "splits": [
+                    {"category_id": "cat-B", "amount_milliunits": -5000, "memo": ""}
+                ],
+            },
+        }}
+        txn = MagicMock(amount=-5000, memo="")
+        txn.subtransactions = []
+        _apply_repeat(merchant, txn)
+        self.assertEqual(txn.category_id, "cat-B")
 
 
 from finab.transactions import _update_merchant_memory
@@ -476,18 +505,19 @@ class TestUpdateMerchantMemory(unittest.TestCase):
         t.memo = parent_memo
         return t
 
-    def test_single_category_updates_count_and_last(self):
+    def test_single_category_writes_processings_keyed_by_amount(self):
         txn = self._single_txn(-50000, "cat-A", memo="receipt")
         _update_merchant_memory(self.store, self.merchant, txn)
 
         store2 = ConfigStore(self.path)
         m = store2.merchant_by_finwise_id("fw-spar")
         self.assertEqual(m["categories_used"], {"cat-A": 1})
-        self.assertEqual(m["last_processing"]["amount_milliunits"], -50000)
-        self.assertEqual(m["last_processing"]["parent_memo"], "receipt")
-        self.assertEqual(len(m["last_processing"]["splits"]), 1)
-        self.assertEqual(m["last_processing"]["splits"][0]["category_id"], "cat-A")
-        self.assertEqual(m["last_processing"]["splits"][0]["amount_milliunits"], -50000)
+        self.assertIn("-50000", m["processings"])
+        entry = m["processings"]["-50000"]
+        self.assertEqual(entry["parent_memo"], "receipt")
+        self.assertEqual(len(entry["splits"]), 1)
+        self.assertEqual(entry["splits"][0]["category_id"], "cat-A")
+        self.assertEqual(entry["splits"][0]["amount_milliunits"], -50000)
 
     def test_split_increments_each_category(self):
         subs = [
@@ -500,24 +530,45 @@ class TestUpdateMerchantMemory(unittest.TestCase):
         store2 = ConfigStore(self.path)
         m = store2.merchant_by_finwise_id("fw-spar")
         self.assertEqual(m["categories_used"], {"cat-A": 1, "cat-B": 1})
-        self.assertEqual(len(m["last_processing"]["splits"]), 2)
-        self.assertEqual(m["last_processing"]["splits"][0]["category_id"], "cat-A")
-        self.assertEqual(m["last_processing"]["splits"][0]["amount_milliunits"], -30000)
-        self.assertEqual(m["last_processing"]["splits"][0]["memo"], "fuel")
+        entry = m["processings"]["-50000"]
+        self.assertEqual(len(entry["splits"]), 2)
+        self.assertEqual(entry["splits"][0]["category_id"], "cat-A")
+        self.assertEqual(entry["splits"][0]["amount_milliunits"], -30000)
+        self.assertEqual(entry["splits"][0]["memo"], "fuel")
 
-    def test_increment_runs_cumulatively(self):
-        # First processing
+    def test_distinct_amounts_accumulate_separate_entries(self):
+        """Categorizing -1000 then -2000 for the same merchant produces
+        TWO entries in processings, one per amount."""
         _update_merchant_memory(
             self.store, self.merchant, self._single_txn(-1000, "cat-A")
         )
-        # Reload and do another
         self.store = ConfigStore(self.path)
         merchant2 = self.store.merchant_by_finwise_id("fw-spar")
-        _update_merchant_memory(self.store, merchant2, self._single_txn(-2000, "cat-A"))
+        _update_merchant_memory(self.store, merchant2, self._single_txn(-2000, "cat-B"))
 
         store3 = ConfigStore(self.path)
         m = store3.merchant_by_finwise_id("fw-spar")
-        self.assertEqual(m["categories_used"]["cat-A"], 2)
+        self.assertEqual(set(m["processings"].keys()), {"-1000", "-2000"})
+        self.assertEqual(m["processings"]["-1000"]["splits"][0]["category_id"], "cat-A")
+        self.assertEqual(m["processings"]["-2000"]["splits"][0]["category_id"], "cat-B")
+        self.assertEqual(m["categories_used"], {"cat-A": 1, "cat-B": 1})
+
+    def test_same_amount_recategorize_overwrites(self):
+        """Categorizing -1000 as cat-A, then re-categorizing -1000 as cat-B,
+        replaces the entry for -1000 (most recent wins per amount).
+        categories_used reflects both uses cumulatively."""
+        _update_merchant_memory(
+            self.store, self.merchant, self._single_txn(-1000, "cat-A")
+        )
+        self.store = ConfigStore(self.path)
+        merchant2 = self.store.merchant_by_finwise_id("fw-spar")
+        _update_merchant_memory(self.store, merchant2, self._single_txn(-1000, "cat-B"))
+
+        store3 = ConfigStore(self.path)
+        m = store3.merchant_by_finwise_id("fw-spar")
+        self.assertEqual(list(m["processings"].keys()), ["-1000"])
+        self.assertEqual(m["processings"]["-1000"]["splits"][0]["category_id"], "cat-B")
+        self.assertEqual(m["categories_used"], {"cat-A": 1, "cat-B": 1})
 
 
 from unittest.mock import patch
@@ -596,11 +647,12 @@ class TestProcessOneTransaction(unittest.TestCase):
         self.store.set_merchant_memory(
             self.merchant["id"],
             categories_used={"c-petrol": 1},
-            last_processing={
-                "amount_milliunits": -9999,  # mismatched so no Enter-repeat
-                "parent_memo": "",
-                "splits": [{"category_id": "c-petrol",
-                            "amount_milliunits": -9999, "memo": ""}],
+            processings={
+                "-9999": {  # mismatched so no Enter-repeat
+                    "parent_memo": "",
+                    "splits": [{"category_id": "c-petrol",
+                                "amount_milliunits": -9999, "memo": ""}],
+                }
             },
         )
         self.store = ConfigStore(self.path)
@@ -622,9 +674,9 @@ class TestProcessOneTransaction(unittest.TestCase):
         self.store.set_merchant_memory(
             self.merchant["id"],
             categories_used={"c-petrol": 1},
-            last_processing={"amount_milliunits": -1000, "parent_memo": "",
-                             "splits": [{"category_id": "c-petrol",
-                                         "amount_milliunits": -1000, "memo": ""}]},
+            processings={"-1000": {"parent_memo": "",
+                                   "splits": [{"category_id": "c-petrol",
+                                               "amount_milliunits": -1000, "memo": ""}]}},
         )
         self.store = ConfigStore(self.path)
         txn = self._txn(-3000)
@@ -640,9 +692,9 @@ class TestProcessOneTransaction(unittest.TestCase):
         self.store.set_merchant_memory(
             self.merchant["id"],
             categories_used={"c-petrol": 1},
-            last_processing={"amount_milliunits": -3000, "parent_memo": "",
-                             "splits": [{"category_id": "c-petrol",
-                                         "amount_milliunits": -3000, "memo": ""}]},
+            processings={"-3000": {"parent_memo": "",
+                                   "splits": [{"category_id": "c-petrol",
+                                               "amount_milliunits": -3000, "memo": ""}]}},
         )
         self.store = ConfigStore(self.path)
         txn = self._txn(-3000)
@@ -732,7 +784,7 @@ class TestMemoryGateOnMissingDecision(unittest.TestCase):
     """sync_transactions must not call _update_merchant_memory for
     transactions that ended up with no category (transfers, no-merchant,
     pre-current-month auto-pushes). Updating memory there would clobber
-    a previous legitimate last_processing entry."""
+    a previous legitimate processings entry."""
 
     def setUp(self):
         import tempfile
@@ -754,16 +806,17 @@ class TestMemoryGateOnMissingDecision(unittest.TestCase):
             fw_record={"id": "fw-xfer", "name": "Discovery"},
             ynab_record={"id": "yn-xfer-payee", "transfer_account_id": "yn-acc-2"},
         )
-        # Seed a pre-existing last_processing on the merchant — we want to
+        # Seed a pre-existing processings entry on the merchant — we want to
         # verify it's NOT overwritten.
         self.store.set_merchant_memory(
             self.merchant["id"],
             categories_used={"cat-existing": 3},
-            last_processing={
-                "amount_milliunits": -1234,
-                "parent_memo": "previous",
-                "splits": [{"category_id": "cat-existing",
-                            "amount_milliunits": -1234, "memo": ""}],
+            processings={
+                "-1234": {
+                    "parent_memo": "previous",
+                    "splits": [{"category_id": "cat-existing",
+                                "amount_milliunits": -1234, "memo": ""}],
+                }
             },
         )
         self.store = ConfigStore(self.path)
@@ -799,8 +852,8 @@ class TestMemoryGateOnMissingDecision(unittest.TestCase):
         m = self.store.merchant_by_finwise_id("fw-xfer")
         # The pre-existing memory must remain untouched.
         self.assertEqual(m["categories_used"], {"cat-existing": 3})
-        self.assertEqual(m["last_processing"]["amount_milliunits"], -1234)
-        self.assertEqual(m["last_processing"]["splits"][0]["category_id"], "cat-existing")
+        self.assertIn("-1234", m["processings"])
+        self.assertEqual(m["processings"]["-1234"]["splits"][0]["category_id"], "cat-existing")
 
 
 class TestMerchantMemoryStringifiesCategoryId(unittest.TestCase):
@@ -841,7 +894,7 @@ class TestMerchantMemoryStringifiesCategoryId(unittest.TestCase):
         store2 = ConfigStore(self.path)
         m = store2.merchant_by_finwise_id("fw-ap")
         self.assertEqual(m["categories_used"], {str(uuid_cat): 1})
-        self.assertEqual(m["last_processing"]["splits"][0]["category_id"], str(uuid_cat))
+        self.assertEqual(m["processings"]["-44000"]["splits"][0]["category_id"], str(uuid_cat))
 
 
 class TestTransactionsStore(unittest.TestCase):

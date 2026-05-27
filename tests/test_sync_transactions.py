@@ -69,9 +69,9 @@ class TestSyncTransactionsIntegration(unittest.TestCase):
         self.store.set_merchant_memory(
             m["id"],
             categories_used={"c-groceries": 1},
-            last_processing={"amount_milliunits": -9999, "parent_memo": "",
-                             "splits": [{"category_id": "c-groceries",
-                                         "amount_milliunits": -9999, "memo": ""}]},
+            processings={"-9999": {"parent_memo": "",
+                                   "splits": [{"category_id": "c-groceries",
+                                               "amount_milliunits": -9999, "memo": ""}]}},
         )
         self.store = ConfigStore(self.path)
 
