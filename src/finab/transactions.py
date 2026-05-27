@@ -96,6 +96,24 @@ _INFLOW_CATEGORY_NAMES = (
 )
 
 
+# Account types that are off-budget in YNAB ("Tracking" accounts). Transactions
+# on these accounts legitimately have no category — YNAB doesn't budget them.
+# Used to suppress the "uncategorized -> update" path in dedup so the user
+# isn't re-prompted to categorize tracking-account transactions every sync.
+_TRACKING_ACCOUNT_TYPES = frozenset({
+    "otherAsset", "otherLiability",
+    "mortgage", "autoLoan", "studentLoan",
+    "personalLoan", "medicalDebt", "otherDebt",
+})
+
+
+def _account_is_tracking(acc: dict) -> bool:
+    """True if the stored account's YNAB type is a tracking (off-budget) type."""
+    if not acc:
+        return False
+    return (acc.get("ynab", {}) or {}).get("type") in _TRACKING_ACCOUNT_TYPES
+
+
 def _is_inflow(txn) -> bool:
     """A positive amount on a YNAB transaction is an inflow."""
     return getattr(txn, "amount", 0) > 0
@@ -229,7 +247,11 @@ def merge_and_filter_transactions(
             # Without this check we'd re-prompt the user for every transfer
             # on every sync.
             is_transfer = getattr(ynab_match, "transfer_account_id", None)
-            if has_category or has_splits or is_transfer:
+            # Tracking accounts (off-budget) never have categories. Their
+            # YNAB twins always have category_id=None; that's not a sign of
+            # needing categorization.
+            is_tracking = _account_is_tracking(acc)
+            if has_category or has_splits or is_transfer or is_tracking:
                 # Already resolved — skip.
                 counts["skip_categorized"] += 1
                 continue

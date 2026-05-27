@@ -198,6 +198,24 @@ class TestMergeAndFilter(unittest.TestCase):
         result = merge_and_filter_transactions(fw_txns, [ynab], self.store, self.tx_store)
         self.assertEqual(result, [])
 
+    def test_skips_tracking_account_match_even_without_category(self):
+        """Tracking (off-budget) accounts in YNAB don't use categories.
+        A null category on a tracking-account transaction is normal, not a
+        signal to re-prompt the user."""
+        # Add a tracking-type account in the store.
+        self.store.add_account(
+            alias="EasyEquities",
+            fw_record={"id": "fw-track"},
+            ynab_record={"id": "yn-track", "type": "otherAsset"},
+        )
+        self.store = ConfigStore(self.config_path)
+
+        self.tx_store.record("fw-tx-2", "import-id-T")
+        fw_txns = [self._fw_txn("fw-tx-2", "fw-track", -1000)]
+        ynab = self._ynab_txn("yn-tx-2", -1000, category_id=None, import_id="import-id-T")
+        result = merge_and_filter_transactions(fw_txns, [ynab], self.store, self.tx_store)
+        self.assertEqual(result, [])
+
     def test_links_uncategorized_ynab_match_for_update(self):
         """A FW txn whose stored import_id matches an uncategorized YNAB
         txn is marked for update (ynab_id set, import_id kept stable)."""
