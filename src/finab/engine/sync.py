@@ -576,3 +576,39 @@ class SyncEngine:
         if merchant:
             _update_merchant_memory(self._store, merchant, c.txn)
         c.status = "decided"
+
+    def apply_split(
+        self,
+        candidate_id: str,
+        *,
+        splits: list,
+        memo: Optional[str] = None,
+    ) -> None:
+        """Record a multi-category split for the named candidate.
+
+        `splits` is a list of {category_id, amount, memo} dicts. The sum
+        of `amount` values must equal txn.amount; this is the same
+        invariant the YNAB API enforces server-side, and surfacing it
+        here lets the UI catch mistakes before flush.
+        """
+        c = self._candidate(candidate_id)
+        total = sum(s["amount"] for s in splits)
+        if total != c.txn.amount:
+            raise ValueError(
+                f"split amounts must sum to txn.amount "
+                f"({c.txn.amount}); got {total}"
+            )
+        c.prior_state = self._snapshot(c.txn)
+        c.txn.category_id = None
+        c.txn.subtransactions = [
+            {"category_id": s["category_id"], "amount": s["amount"], "memo": s.get("memo", "") or ""}
+            for s in splits
+        ]
+        if memo is not None:
+            c.txn.memo = memo
+        merchant = self._store.merchant_by_finwise_id(
+            getattr(c.txn, "merchant_id", None)
+        )
+        if merchant:
+            _update_merchant_memory(self._store, merchant, c.txn)
+        c.status = "decided"

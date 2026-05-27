@@ -312,3 +312,64 @@ class TestApplyCategory:
         engine, _ = self._setup(tmp_path)
         with pytest.raises(KeyError):
             engine.apply_category("not-a-real-id", category_id="cat-x")
+
+
+class TestApplySplit:
+    def _setup(self, tmp_path):
+        from datetime import date as date_cls
+        store = _seeded_store(tmp_path)
+        store.add_merchant(
+            alias="Costco",
+            fw_record={"id": "fw-merchant-2", "name": "Costco", "samples": []},
+            ynab_record={"id": "yn-pay-2", "name": "Costco", "transfer_account_id": None},
+        )
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        today = date_cls.today()
+        txn = _build_txn(
+            fw_uuid="fw-5", amount=-8421,
+            account_id="fw-acc-1", merchant_id="fw-merchant-2",
+            date_str=f"{today.year:04d}-{today.month:02d}-{today.day:02d}",
+        )
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        return engine, store
+
+    def test_split_sets_subtransactions(self, tmp_path):
+        engine, _ = self._setup(tmp_path)
+        c = engine.candidates[0]
+        splits = [
+            {"category_id": "cat-groc", "amount": -5000, "memo": "produce"},
+            {"category_id": "cat-house", "amount": -3421, "memo": "soap"},
+        ]
+        engine.apply_split(c.id, splits=splits)
+        assert c.status == "decided"
+        assert c.txn.category_id is None
+        assert len(c.txn.subtransactions) == 2
+        assert c.txn.subtransactions[0]["amount"] == -5000
+
+    def test_split_must_sum_to_total(self, tmp_path):
+        engine, _ = self._setup(tmp_path)
+        c = engine.candidates[0]
+        bad_splits = [
+            {"category_id": "cat-groc", "amount": -1000, "memo": ""},
+            {"category_id": "cat-house", "amount": -1000, "memo": ""},
+        ]
+        with pytest.raises(ValueError, match="must sum"):
+            engine.apply_split(c.id, splits=bad_splits)
+
+    def test_split_writes_merchant_memory(self, tmp_path):
+        engine, store = self._setup(tmp_path)
+        c = engine.candidates[0]
+        engine.apply_split(c.id, splits=[
+            {"category_id": "cat-groc", "amount": -5000, "memo": ""},
+            {"category_id": "cat-house", "amount": -3421, "memo": ""},
+        ])
+        merchant = store.merchant_by_finwise_id("fw-merchant-2")
+        # both categories should be counted
+        assert merchant["categories_used"].get("cat-groc") == 1
+        assert merchant["categories_used"].get("cat-house") == 1
