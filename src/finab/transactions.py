@@ -20,14 +20,15 @@ TRANSACTIONS_FILE = Path("transactions.json")
 
 
 class TransactionsStore:
-    """Owns transactions.json: a map from FinWise transaction UUIDs to the
-    corresponding YNAB transaction UUIDs. Kept separate from ConfigStore
-    because this map is high-churn (one entry per sync) whereas accounts
-    and merchants are low-churn.
+    """Owns transactions.json: a map from FinWise transaction UUIDs to our
+    durable YNAB import_id (a random uuid4 hex). The import_id is sent to
+    YNAB on each push and is what we dedup against on subsequent fetches.
 
-    Phase 3 uses this map for dedup instead of YNAB's `import_id` field —
-    so YNAB-side deletes don't leave 'phantom' import_ids that prevent
-    re-importing the same FinWise transaction later.
+    When a previously-synced YNAB transaction is missing from the live
+    YNAB fetch (user deleted it), the import_id is rotated: a new uuid is
+    generated, replacing the stored one, and the FW transaction is pushed
+    as new. This sidesteps YNAB's phantom-import_id behaviour (which would
+    otherwise silently no-op a re-push using the deleted-but-remembered id).
     """
 
     def __init__(self, path: Path = TRANSACTIONS_FILE):
@@ -50,36 +51,29 @@ class TransactionsStore:
             json.dump(self._data, f, indent=4, default=str)
         os.replace(tmp, self.path)
 
-    def synced_ynab_id(self, fw_uuid: str) -> Optional[str]:
-        """Return the YNAB UUID this FinWise transaction was previously
-        synced to, or None if it hasn't been synced."""
+    def import_id_for(self, fw_uuid: str) -> Optional[str]:
+        """Return the durable YNAB import_id we previously assigned to
+        this FinWise transaction, or None if it hasn't been synced."""
         return self._data["synced_transactions"].get(fw_uuid)
 
-    def record_sync(self, fw_uuid: str, ynab_uuid: str) -> None:
-        """Persist a single fw -> ynab mapping."""
-        self._data["synced_transactions"][fw_uuid] = ynab_uuid
+    def record(self, fw_uuid: str, import_id: str) -> None:
+        """Persist a single fw -> import_id mapping."""
+        self._data["synced_transactions"][fw_uuid] = import_id
         self._save()
 
-    def record_syncs(self, mappings: dict) -> None:
-        """Persist a batch of fw -> ynab mappings in one save."""
-        if not mappings:
-            return
-        self._data["synced_transactions"].update(mappings)
-        self._save()
-
-    def remove_sync(self, fw_uuid: str) -> None:
-        """Drop a stale mapping (the YNAB transaction was deleted)."""
+    def remove(self, fw_uuid: str) -> None:
+        """Drop a stale mapping."""
         if fw_uuid in self._data["synced_transactions"]:
             del self._data["synced_transactions"][fw_uuid]
             self._save()
 
-    def prune_stale(self, live_ynab_ids: set) -> int:
-        """Drop any mapping whose YNAB UUID is not in the live YNAB fetch.
+    def prune_stale(self, live_import_ids: set) -> int:
+        """Drop any mapping whose import_id is not in the live YNAB fetch.
         Returns the number of entries removed."""
         kept = {
-            fw: yn
-            for fw, yn in self._data["synced_transactions"].items()
-            if yn in live_ynab_ids
+            fw: iid
+            for fw, iid in self._data["synced_transactions"].items()
+            if iid in live_import_ids
         }
         removed = len(self._data["synced_transactions"]) - len(kept)
         if removed:
@@ -148,28 +142,29 @@ def merge_and_filter_transactions(
     tx_store: "TransactionsStore",
 ) -> list:
     """Map FinWise accounts to YNAB account ids via the store, dedup against
-    our local sync map (tx_store), and skip transactions already categorized
-    in YNAB. Returns the list of FinWise transactions needing processing.
+    our stable import_id stored in transactions.json, and skip transactions
+    already categorized in YNAB. Returns the list of FinWise transactions
+    needing processing.
 
-    Each FW transaction passes through one of four paths:
-      1. account unknown -> drop
-      2. previously synced + YNAB twin exists + categorized -> drop (preserve
-         user's manual categorization in YNAB)
+    Each FW transaction passes through one of these paths:
+      1. account unknown OR ignore_transactions=True -> drop
+      2. previously synced + YNAB twin exists + categorized -> drop
+         (preserve user's manual categorization in YNAB)
       3. previously synced + YNAB twin exists + uncategorized -> mark for
-         update (set fw_txn.ynab_id so the queue routes to update_transactions)
-      4. previously synced + YNAB twin missing -> remove the stale map entry,
-         treat as new (push will re-create it)
-      5. never synced -> new transaction
+         update (set fw_txn.ynab_id; keep stable import_id)
+      4. previously synced + YNAB twin missing -> rotate (generate fresh
+         uuid, overwrite stored, push as new) — handles user-side deletes
+      5. never synced -> new transaction (generate uuid, record, push)
     """
-    # Build {ynab_uuid: ynab_txn} from the live YNAB fetch, skipping deleted.
-    ynab_by_id = {
-        str(t.id): t
+    # Index live YNAB transactions by their import_id (skip deleted).
+    ynab_by_import_id = {
+        str(t.import_id): t
         for t in ynab_transactions
-        if not getattr(t, "deleted", False)
+        if not getattr(t, "deleted", False) and getattr(t, "import_id", None)
     }
 
-    # Prune any sync-map entries whose YNAB UUID is gone (user-deleted).
-    tx_store.prune_stale(set(ynab_by_id.keys()))
+    # Prune any stored import_ids no longer present in YNAB.
+    tx_store.prune_stale(set(ynab_by_import_id.keys()))
 
     out = []
     for fw_txn in fw_transactions:
@@ -182,23 +177,24 @@ def merge_and_filter_transactions(
         if not ynab_account_id:
             continue
 
-        # The FW UUID lives on Transaction.import_id (set by from_finwise).
-        fw_uuid = fw_txn.import_id
+        fw_uuid = fw_txn.import_id  # FW's own UUID, set by from_finwise
+        our_id = tx_store.import_id_for(fw_uuid) if fw_uuid else None
 
-        prev_ynab_id = tx_store.synced_ynab_id(fw_uuid) if fw_uuid else None
-        if prev_ynab_id:
-            ynab_match = ynab_by_id.get(prev_ynab_id)
-            if ynab_match is None:
-                # Stale: user deleted in YNAB. prune_stale already removed it;
-                # fall through and treat as new.
-                pass
-            elif getattr(ynab_match, "category_id", None):
+        if our_id and our_id in ynab_by_import_id:
+            # Already synced and YNAB still has it.
+            ynab_match = ynab_by_import_id[our_id]
+            if getattr(ynab_match, "category_id", None):
                 # Already categorized — preserve user's manual work.
                 continue
-            else:
-                # Uncategorized twin -> mark for update.
-                fw_txn.ynab_id = prev_ynab_id
-                fw_txn.category_id = None
+            fw_txn.ynab_id = str(ynab_match.id)
+            fw_txn.import_id = our_id  # keep stable for update push
+            fw_txn.category_id = None
+        else:
+            # Either never synced, or YNAB-twin missing (user deleted).
+            # Rotate: fresh UUID, overwrite stored, push as new.
+            new_id = uuid.uuid4().hex
+            tx_store.record(fw_uuid, new_id)
+            fw_txn.import_id = new_id
 
         fw_txn.account_id = ynab_account_id
         out.append(fw_txn)
@@ -469,14 +465,10 @@ class _PendingQueue:
     """Holds categorized-but-not-yet-pushed transactions. Flushed on demand
     via the `f` command, at end of run, or after Ctrl+C confirmation.
 
-    Each create-txn enters the queue with its FinWise transaction UUID
-    sitting on `Transaction.import_id` (set by `Transaction.from_finwise`).
-    On flush, we read each FW UUID off `import_id`, then overwrite that
-    field with a fresh transient correlator UUID — sent to YNAB purely so
-    its batch response echoes the same value back, letting us map each
-    returned YNAB transaction to the corresponding FW UUID. The transient
-    `import_id` is never reused; it exists for the duration of one API
-    call.
+    Each create-txn enters the queue with its durable YNAB import_id on
+    `Transaction.import_id` (assigned by `merge_and_filter_transactions`
+    from `TransactionsStore`). The flush sends that import_id through to
+    YNAB as-is — no transient correlators, no post-flush mapping writes.
     """
 
     def __init__(self):
@@ -492,61 +484,22 @@ class _PendingQueue:
         else:
             self.creates.append(txn)
 
-    def flush(self, ynab_client: YNABClient, budget_id: str, tx_store: Optional["TransactionsStore"] = None) -> bool:
+    def flush(self, ynab_client: YNABClient, budget_id: str) -> bool:
         """Push all pending transactions in two batched calls. Returns True
-        if both succeed (queue clears). On any exception, returns False and
-        keeps the queue for retry.
+        on success. Raises on failure (no swallowing — see fail-loud spec).
 
-        For creates: assign each one a fresh transient `import_id` (random
-        UUID) so we can correlate YNAB's response back to the FW UUID.
-        After the push, record the `{fw_uuid -> ynab_uuid}` mappings in
-        `tx_store` so future runs can dedup."""
-        try:
-            creates_snap = list(self.creates)
-            updates_snap = list(self.updates)
-
-            # Build correlation_id -> fw_uuid map and assign transient
-            # import_ids to each create. We read each txn's FW UUID off
-            # its current import_id (set by Transaction.from_finwise) and
-            # then overwrite import_id with a fresh transient correlator.
-            # The original FW UUID is preserved in the correlation_map
-            # alone — nothing else needs to read it off the txn.
-            correlation_map: dict[str, str] = {}
-            for txn in creates_snap:
-                fw_uuid = getattr(txn, "import_id", None)
-                if not fw_uuid:
-                    continue
-                correlator = uuid.uuid4().hex[:32]
-                correlation_map[correlator] = fw_uuid
-                txn.import_id = correlator
-
-            create_response = None
-            if creates_snap:
-                create_response = ynab_client.create_transactions(budget_id, creates_snap)
-            if updates_snap:
-                ynab_client.update_transactions(budget_id, updates_snap)
-
-            # Record fw -> ynab mappings from the create response.
-            if create_response is not None and tx_store is not None:
-                mappings = {}
-                try:
-                    returned = create_response.data.transactions or []
-                except AttributeError:
-                    returned = []
-                for ynab_txn in returned:
-                    yn_import = getattr(ynab_txn, "import_id", None)
-                    fw_uuid = correlation_map.get(yn_import) if yn_import else None
-                    if fw_uuid:
-                        mappings[fw_uuid] = str(ynab_txn.id)
-                if mappings:
-                    tx_store.record_syncs(mappings)
-
-            self.creates.clear()
-            self.updates.clear()
-            return True
-        except Exception as e:
-            print(f"Flush failed: {e}")
-            return False
+        txn.import_id is already the durable UUID set by
+        merge_and_filter_transactions; we send it through as-is.
+        """
+        creates_snap = list(self.creates)
+        updates_snap = list(self.updates)
+        if creates_snap:
+            ynab_client.create_transactions(budget_id, creates_snap)
+        if updates_snap:
+            ynab_client.update_transactions(budget_id, updates_snap)
+        self.creates.clear()
+        self.updates.clear()
+        return True
 
 
 def _can_repeat(merchant: dict, txn) -> bool:
@@ -852,7 +805,7 @@ def sync_transactions(
                 ynab_categories, category_groups,
             )
             if outcome == "flush":
-                queue.flush(ynab_client, budget_id, tx_store)
+                queue.flush(ynab_client, budget_id)
                 continue   # re-process the same transaction
             if outcome == "categorized":
                 queue.add(txn)
@@ -872,11 +825,11 @@ def sync_transactions(
             idx += 1
         # Normal end-of-loop: auto-flush whatever's pending.
         if queue.count() > 0:
-            queue.flush(ynab_client, budget_id, tx_store)
+            queue.flush(ynab_client, budget_id)
     except KeyboardInterrupt:
         # User explicitly chose; respect their answer. Don't fall through to
         # an unconditional finally that would re-flush.
         if queue.count() > 0:
             if _confirm(f"\nFlush {queue.count()} pending transactions before exit? [Y/n]: "):
-                queue.flush(ynab_client, budget_id, tx_store)
+                queue.flush(ynab_client, budget_id)
         raise

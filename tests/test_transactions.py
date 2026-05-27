@@ -44,14 +44,15 @@ class TestPendingQueue(unittest.TestCase):
         client.create_transactions.assert_called_once()
         client.update_transactions.assert_not_called()
 
-    def test_flush_failure_keeps_queue(self):
+    def test_flush_failure_raises(self):
+        """Failures propagate. The queue may be in any state on failure;
+        the contract is just 'an exception reaches the orchestrator'."""
         q = _PendingQueue()
         q.add(MagicMock(ynab_id=None))
         client = MagicMock()
         client.create_transactions.side_effect = RuntimeError("network")
-        ok = q.flush(client, "bid")
-        self.assertFalse(ok)
-        self.assertEqual(q.count(), 1)
+        with self.assertRaises(RuntimeError):
+            q.flush(client, "bid")
 
 
 class TestAutoPathHelpers(unittest.TestCase):
@@ -131,13 +132,14 @@ class TestMergeAndFilter(unittest.TestCase):
         t.category_id = None
         return t
 
-    def _ynab_txn(self, id, amount, category_id=None, deleted=False):
+    def _ynab_txn(self, id, amount, category_id=None, deleted=False, import_id=None):
         t = MagicMock()
         t.id = id
         t.amount = amount
         t.category_id = category_id
         t.deleted = deleted
         t.transfer_account_id = None
+        t.import_id = import_id
         return t
 
     def test_skips_fw_with_unknown_account(self):
@@ -152,34 +154,43 @@ class TestMergeAndFilter(unittest.TestCase):
         self.assertEqual(result[0].account_id, "yn-acc")
 
     def test_skips_already_categorized_match(self):
-        # Record a prior sync so the FW txn is dedup'd against yn-tx-1.
-        self.tx_store.record_sync("fw-tx-1", "yn-tx-1")
+        """A FW txn whose stored import_id matches a YNAB txn that is
+        already categorized is dropped (preserve manual YNAB edits)."""
+        self.tx_store.record("fw-tx-1", "import-id-A")
         fw_txns = [self._fw_txn("fw-tx-1", "fw-acc", -1000)]
-        ynab_txns = [self._ynab_txn("yn-tx-1", -1000, category_id="cat-X")]
+        ynab_txns = [self._ynab_txn(
+            "yn-tx-1", -1000, category_id="cat-X", import_id="import-id-A"
+        )]
         result = merge_and_filter_transactions(fw_txns, ynab_txns, self.store, self.tx_store)
-        # Already categorized in YNAB -> skipped
         self.assertEqual(result, [])
 
     def test_links_uncategorized_ynab_match_for_update(self):
-        self.tx_store.record_sync("fw-tx-1", "yn-tx-1")
+        """A FW txn whose stored import_id matches an uncategorized YNAB
+        txn is marked for update (ynab_id set, import_id kept stable)."""
+        self.tx_store.record("fw-tx-1", "import-id-A")
         fw_txns = [self._fw_txn("fw-tx-1", "fw-acc", -1000)]
-        ynab_txns = [self._ynab_txn("yn-tx-1", -1000, category_id=None)]
+        ynab_txns = [self._ynab_txn(
+            "yn-tx-1", -1000, category_id=None, import_id="import-id-A"
+        )]
         result = merge_and_filter_transactions(fw_txns, ynab_txns, self.store, self.tx_store)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].ynab_id, "yn-tx-1")
+        self.assertEqual(result[0].import_id, "import-id-A")
 
-    def test_treats_as_new_when_ynab_twin_was_deleted(self):
-        """If a previously-synced YNAB transaction was deleted, the stale
-        mapping is pruned and the FW txn is treated as new (re-importable)."""
-        self.tx_store.record_sync("fw-tx-1", "yn-tx-old")
+    def test_rotates_when_ynab_twin_was_deleted(self):
+        """If the stored import_id is no longer present in the live YNAB
+        fetch, the entry is replaced with a fresh uuid and the FW txn is
+        treated as new (will re-push with the new id)."""
+        self.tx_store.record("fw-tx-1", "import-id-OLD")
         fw_txns = [self._fw_txn("fw-tx-1", "fw-acc", -1000)]
-        # The YNAB fetch no longer contains yn-tx-old.
+        # YNAB no longer has any txn with import_id=import-id-OLD.
         result = merge_and_filter_transactions(fw_txns, [], self.store, self.tx_store)
         self.assertEqual(len(result), 1)
-        # Marked as new — no ynab_id set.
         self.assertIsNone(result[0].ynab_id)
-        # Stale mapping pruned.
-        self.assertIsNone(self.tx_store.synced_ynab_id("fw-tx-1"))
+        rotated = self.tx_store.import_id_for("fw-tx-1")
+        self.assertIsNotNone(rotated)
+        self.assertNotEqual(rotated, "import-id-OLD")
+        self.assertEqual(result[0].import_id, rotated)
 
     def test_skips_account_marked_ignore_transactions(self):
         """Transactions whose FW account is flagged ignore_transactions
@@ -192,6 +203,17 @@ class TestMergeAndFilter(unittest.TestCase):
         fw_txns = [self._fw_txn("fw-tx-1", "fw-acc", -1000)]
         result = merge_and_filter_transactions(fw_txns, [], self.store, self.tx_store)
         self.assertEqual(result, [])
+
+    def test_assigns_fresh_uuid_for_never_synced(self):
+        """A FW txn with no stored mapping gets a fresh uuid recorded and
+        set as its import_id."""
+        fw_txns = [self._fw_txn("fw-tx-new", "fw-acc", -1000)]
+        result = merge_and_filter_transactions(fw_txns, [], self.store, self.tx_store)
+        self.assertEqual(len(result), 1)
+        assigned = self.tx_store.import_id_for("fw-tx-new")
+        self.assertIsNotNone(assigned)
+        self.assertEqual(result[0].import_id, assigned)
+        self.assertIsNone(result[0].ynab_id)
 
 
 from unittest.mock import patch
@@ -919,97 +941,58 @@ class TestTransactionsStore(unittest.TestCase):
 
     def test_starts_empty(self):
         s = TransactionsStore(self.path)
-        self.assertIsNone(s.synced_ynab_id("anything"))
+        self.assertIsNone(s.import_id_for("anything"))
 
     def test_record_and_retrieve(self):
         s = TransactionsStore(self.path)
-        s.record_sync("fw-1", "yn-1")
-        self.assertEqual(s.synced_ynab_id("fw-1"), "yn-1")
+        s.record("fw-1", "import-id-1")
+        self.assertEqual(s.import_id_for("fw-1"), "import-id-1")
         # Persists across reload
         s2 = TransactionsStore(self.path)
-        self.assertEqual(s2.synced_ynab_id("fw-1"), "yn-1")
+        self.assertEqual(s2.import_id_for("fw-1"), "import-id-1")
 
-    def test_record_syncs_batch(self):
+    def test_remove(self):
         s = TransactionsStore(self.path)
-        s.record_syncs({"fw-1": "yn-1", "fw-2": "yn-2"})
-        self.assertEqual(s.synced_ynab_id("fw-1"), "yn-1")
-        self.assertEqual(s.synced_ynab_id("fw-2"), "yn-2")
-
-    def test_remove_sync(self):
-        s = TransactionsStore(self.path)
-        s.record_sync("fw-1", "yn-1")
-        s.remove_sync("fw-1")
-        self.assertIsNone(s.synced_ynab_id("fw-1"))
+        s.record("fw-1", "import-id-1")
+        s.remove("fw-1")
+        self.assertIsNone(s.import_id_for("fw-1"))
 
     def test_prune_stale_removes_orphans(self):
         s = TransactionsStore(self.path)
-        s.record_syncs({"fw-1": "yn-keep", "fw-2": "yn-gone"})
-        removed = s.prune_stale({"yn-keep"})
+        s.record("fw-1", "iid-keep")
+        s.record("fw-2", "iid-gone")
+        removed = s.prune_stale({"iid-keep"})
         self.assertEqual(removed, 1)
-        self.assertEqual(s.synced_ynab_id("fw-1"), "yn-keep")
-        self.assertIsNone(s.synced_ynab_id("fw-2"))
+        self.assertEqual(s.import_id_for("fw-1"), "iid-keep")
+        self.assertIsNone(s.import_id_for("fw-2"))
 
 
-class TestPendingQueueFlushRecordsMappings(unittest.TestCase):
-    """After flush, _PendingQueue records {fw_uuid -> ynab_uuid} mappings
-    in the TransactionsStore. Correlation is done via a transient import_id
-    YNAB echoes back in the create response."""
+class TestPendingQueueFlushPassesImportId(unittest.TestCase):
+    """After the stable-import_id refactor, flush sends txn.import_id
+    (already a durable UUID set by merge_and_filter_transactions) directly
+    to YNAB — no transient correlators, no post-flush mapping writes."""
 
-    def setUp(self):
-        self.tmpdir = tempfile.TemporaryDirectory()
-        self.path = Path(self.tmpdir.name) / "transactions.json"
-        self.tx_store = TransactionsStore(self.path)
-
-    def tearDown(self):
-        self.tmpdir.cleanup()
-
-    def test_flush_records_fw_to_ynab_via_correlator(self):
+    def test_flush_sends_txn_import_id_as_is(self):
         from finab.transactions import _PendingQueue
         q = _PendingQueue()
-        # Two creates, each with a different FW UUID in import_id.
-        t1 = MagicMock(ynab_id=None, import_id="fw-uuid-1")
-        t2 = MagicMock(ynab_id=None, import_id="fw-uuid-2")
+        t1 = MagicMock(ynab_id=None, import_id="stable-uuid-1")
+        t2 = MagicMock(ynab_id=None, import_id="stable-uuid-2")
         q.add(t1)
         q.add(t2)
 
-        # The mock client must capture the correlators we send, then return
-        # transactions whose .import_id matches (echoing them back).
         ynab_client = MagicMock()
+        q.flush(ynab_client, "bid")
 
-        def fake_create(budget_id, txns):
-            # Return a response with one ynab txn per input, matching its
-            # transient import_id back to a fresh ynab id.
-            resp = MagicMock()
-            ynab_txns = []
-            for i, t in enumerate(txns, start=1):
-                yt = MagicMock()
-                yt.id = f"yn-new-{i}"
-                yt.import_id = t.import_id  # YNAB echoes the input import_id
-                ynab_txns.append(yt)
-            resp.data.transactions = ynab_txns
-            return resp
-
-        ynab_client.create_transactions.side_effect = fake_create
-        ok = q.flush(ynab_client, "bid", self.tx_store)
-
-        self.assertTrue(ok)
-        # Both mappings recorded with FW UUIDs as keys.
-        self.assertEqual(self.tx_store.synced_ynab_id("fw-uuid-1"), "yn-new-1")
-        self.assertEqual(self.tx_store.synced_ynab_id("fw-uuid-2"), "yn-new-2")
-
-    def test_flush_does_not_record_when_no_tx_store(self):
-        from finab.transactions import _PendingQueue
-        q = _PendingQueue()
-        q.add(MagicMock(ynab_id=None, import_id="fw-uuid-1"))
-        ynab_client = MagicMock()
-        ok = q.flush(ynab_client, "bid", None)
-        # Still succeeds; no mapping recorded since there's no tx_store.
-        self.assertTrue(ok)
+        # The import_id on each txn was NOT mutated by flush.
+        self.assertEqual(t1.import_id, "stable-uuid-1")
+        self.assertEqual(t2.import_id, "stable-uuid-2")
+        ynab_client.create_transactions.assert_called_once()
 
     def test_flush_works_with_real_transaction_model(self):
         """Regression: pydantic v2's Transaction model rejects undeclared
-        attribute assignment. The flush path must only touch declared
-        fields (import_id), not stash side data on the model."""
+        attribute assignment. The new flush is simpler — no side-attr
+        stash — so this is just a smoke test that real Transaction
+        instances flow through cleanly."""
         from datetime import date as d
         from finab.models import Transaction
         from finab.transactions import _PendingQueue
@@ -1019,25 +1002,12 @@ class TestPendingQueueFlushRecordsMappings(unittest.TestCase):
             account_id="yn-acc",
             date=d(2026, 5, 20),
             amount=-5000,
-            import_id="fw-uuid-real",
+            import_id="stable-uuid",
         )
         q.add(txn)
-
         ynab_client = MagicMock()
-
-        def fake_create(budget_id, txns):
-            resp = MagicMock()
-            yt = MagicMock()
-            yt.id = "yn-new"
-            yt.import_id = txns[0].import_id  # echo back the correlator
-            resp.data.transactions = [yt]
-            return resp
-
-        ynab_client.create_transactions.side_effect = fake_create
-        ok = q.flush(ynab_client, "bid", self.tx_store)
-        self.assertTrue(ok)
-        # Mapping recorded using the ORIGINAL FW UUID, not the correlator.
-        self.assertEqual(self.tx_store.synced_ynab_id("fw-uuid-real"), "yn-new")
+        q.flush(ynab_client, "bid")
+        self.assertEqual(txn.import_id, "stable-uuid")
 
 
 if __name__ == "__main__":
