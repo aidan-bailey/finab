@@ -4,11 +4,17 @@ These functions and constants were extracted from finab.transactions
 to give phase 3 a non-interactive surface. transactions.py re-exports
 them so existing call sites keep working.
 
-No I/O of any kind here beyond reading from the ConfigStore / TransactionsStore
-arguments passed in — no print(), no input(), no network.
+No interactive I/O (no input(), no network). Diagnostic print() calls
+inside merge_and_filter_transactions are retained verbatim from the
+original — they emit dedup diagnostics (counts and warnings) and aren't
+worth refactoring out at this stage of the migration.
 """
 from datetime import date
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from finab.store import ConfigStore
+    from finab.transactions import TransactionsStore
 
 
 # Names YNAB might use for the inflow category. Checked in this order.
@@ -93,8 +99,8 @@ def _dim(s: str) -> str: return s
 def merge_and_filter_transactions(
     fw_transactions,
     ynab_transactions,
-    store,
-    tx_store,
+    store: "ConfigStore",
+    tx_store: "TransactionsStore",
 ) -> list:
     """Map FinWise accounts to YNAB account ids via the store, dedup against
     our stable import_id stored in transactions.json, and skip transactions
@@ -300,7 +306,7 @@ def _apply_processing_to_txn(entry: dict, txn) -> None:
     txn.subtransactions = scaled
 
 
-def _update_merchant_memory(store, merchant: dict, txn) -> None:
+def _update_merchant_memory(store: "ConfigStore", merchant: dict, txn) -> None:
     """Update the merchant's categories_used (frequency map) and
     processings (dict of {str(amount): {parent_memo, splits}}) based on
     the just-categorized transaction. Persists via
@@ -382,7 +388,7 @@ def _render_splits(entry: dict, ynab_categories: list, scale: float = 1.0) -> st
     return ", ".join(parts)
 
 
-def _sort_key(store):
+def _sort_key(store: "ConfigStore"):
     """Sort candidates by (merchant_alias, date_asc). Unknown-merchant
     transactions sort to the end."""
     def key(txn):
