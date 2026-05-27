@@ -255,3 +255,60 @@ class TestSyncEngineLoad:
         c = engine.candidates[0]
         assert c.status == "pending"
         assert c.auto_reason is None
+
+
+class TestApplyCategory:
+    def _setup(self, tmp_path):
+        from datetime import date as date_cls
+        store = _seeded_store(tmp_path)
+        store.add_merchant(
+            alias="Costco",
+            fw_record={"id": "fw-merchant-2", "name": "Costco", "samples": []},
+            ynab_record={"id": "yn-pay-2", "name": "Costco", "transfer_account_id": None},
+        )
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        today = date_cls.today()
+        txn = _build_txn(
+            fw_uuid="fw-5", amount=-8421,
+            account_id="fw-acc-1", merchant_id="fw-merchant-2",
+            date_str=f"{today.year:04d}-{today.month:02d}-{today.day:02d}",
+        )
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        return engine, store
+
+    def test_marks_decided_and_sets_category(self, tmp_path):
+        engine, store = self._setup(tmp_path)
+        c = engine.candidates[0]
+        engine.apply_category(c.id, category_id="cat-groceries", memo="produce")
+        assert c.status == "decided"
+        assert str(c.txn.category_id) == "cat-groceries"
+        assert c.txn.subtransactions == []
+        assert c.txn.memo == "produce"
+
+    def test_writes_merchant_memory(self, tmp_path):
+        engine, store = self._setup(tmp_path)
+        c = engine.candidates[0]
+        engine.apply_category(c.id, category_id="cat-groceries")
+        merchant = store.merchant_by_finwise_id("fw-merchant-2")
+        assert merchant["categories_used"].get("cat-groceries") == 1
+        assert str(c.txn.amount) in merchant["processings"]
+
+    def test_snapshots_prior_state(self, tmp_path):
+        engine, store = self._setup(tmp_path)
+        c = engine.candidates[0]
+        original_payee_id = c.txn.payee_id
+        engine.apply_category(c.id, category_id="cat-groceries")
+        assert c.prior_state is not None
+        assert c.prior_state["payee_id"] == original_payee_id
+        assert c.prior_state["category_id"] is None  # was None pre-decision
+
+    def test_unknown_candidate_id_raises(self, tmp_path):
+        engine, _ = self._setup(tmp_path)
+        with pytest.raises(KeyError):
+            engine.apply_category("not-a-real-id", category_id="cat-x")

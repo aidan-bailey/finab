@@ -531,3 +531,48 @@ class SyncEngine:
         txn.payee_id = merchant["ynab"].get("id")
         txn.payee_name = None
         return candidate
+
+    def _candidate(self, candidate_id: str) -> "Candidate":
+        """Look up a candidate by id. Raises KeyError if not found."""
+        for c in self.candidates:
+            if c.id == candidate_id:
+                return c
+        raise KeyError(f"unknown candidate id: {candidate_id!r}")
+
+    def _snapshot(self, txn) -> dict:
+        """Capture the fields apply_*/undo cares about."""
+        return {
+            "category_id": getattr(txn, "category_id", None),
+            "subtransactions": list(getattr(txn, "subtransactions", []) or []),
+            "payee_id": getattr(txn, "payee_id", None),
+            "payee_name": getattr(txn, "payee_name", None),
+            "memo": getattr(txn, "memo", None),
+        }
+
+    def apply_category(
+        self,
+        candidate_id: str,
+        *,
+        category_id: str,
+        memo: Optional[str] = None,
+    ) -> None:
+        """Record a single-category decision for the named candidate.
+
+        Mutates the Transaction (category_id, subtransactions=[], optional memo),
+        updates merchant memory (categories_used + processings) if the candidate
+        has a resolvable merchant, and sets status='decided'.
+
+        Memory update is by-design last-write-wins per (merchant, amount).
+        """
+        c = self._candidate(candidate_id)
+        c.prior_state = self._snapshot(c.txn)
+        c.txn.category_id = category_id
+        c.txn.subtransactions = []
+        if memo is not None:
+            c.txn.memo = memo
+        merchant = self._store.merchant_by_finwise_id(
+            getattr(c.txn, "merchant_id", None)
+        )
+        if merchant:
+            _update_merchant_memory(self._store, merchant, c.txn)
+        c.status = "decided"
