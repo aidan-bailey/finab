@@ -471,7 +471,16 @@ def sync_accounts(
                 ynab_record=to_dict(new_record),
                 ignore_transactions=ignore_transactions,
             )
-            print(f"Created YNAB account '{alias}'")
+            print(f"Created YNAB account '{alias}' (type sent: {fw_acc.type})")
+            print(_yellow(
+                f"  Note: YNAB's API creates accounts as 'unlinked', so "
+                f"'{alias}' will appear under the Cash group in the YNAB "
+                f"sidebar regardless of type."
+            ))
+            print(_yellow(
+                f"  Open Edit Account in YNAB to change it to '{fw_acc.type}' "
+                f"if you want the correct sidebar grouping."
+            ))
             if ignore_transactions:
                 print(_dim(f"  (transactions for '{alias}' will be ignored)"))
         except Exception as e:
