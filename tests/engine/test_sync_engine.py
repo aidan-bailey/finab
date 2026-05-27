@@ -373,3 +373,58 @@ class TestApplySplit:
         # both categories should be counted
         assert merchant["categories_used"].get("cat-groc") == 1
         assert merchant["categories_used"].get("cat-house") == 1
+
+
+class TestApplyTransfer:
+    def test_apply_transfer_sets_payee_and_clears_category(self, tmp_path):
+        from datetime import date as date_cls
+        store = _seeded_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        today = date_cls.today()
+        txn = _build_txn(
+            fw_uuid="fw-6", amount=-15000,
+            account_id="fw-acc-1", merchant_id=None,
+            date_str=f"{today.year:04d}-{today.month:02d}-{today.day:02d}",
+        )
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        c = engine.candidates[0]
+        # Currently this txn is auto/no-merchant — override it to a transfer.
+        engine.apply_transfer(c.id, transfer_payee_id="yn-tpayee-1")
+        assert c.status == "decided"
+        assert c.txn.payee_id == "yn-tpayee-1"
+        assert c.txn.category_id is None
+        assert c.txn.subtransactions == []
+
+    def test_apply_transfer_does_not_touch_merchant_memory(self, tmp_path):
+        from datetime import date as date_cls
+        store = _seeded_store(tmp_path)
+        store.add_merchant(
+            alias="Costco",
+            fw_record={"id": "fw-merchant-2", "name": "Costco", "samples": []},
+            ynab_record={"id": "yn-pay-2", "name": "Costco", "transfer_account_id": None},
+        )
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        today = date_cls.today()
+        txn = _build_txn(
+            fw_uuid="fw-7", amount=-9999,
+            account_id="fw-acc-1", merchant_id="fw-merchant-2",
+            date_str=f"{today.year:04d}-{today.month:02d}-{today.day:02d}",
+        )
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        c = engine.candidates[0]
+        engine.apply_transfer(c.id, transfer_payee_id="yn-tpayee-1")
+        merchant = store.merchant_by_finwise_id("fw-merchant-2")
+        assert not merchant.get("categories_used")
+        assert not merchant.get("processings")

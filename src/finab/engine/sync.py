@@ -612,3 +612,23 @@ class SyncEngine:
         if merchant:
             _update_merchant_memory(self._store, merchant, c.txn)
         c.status = "decided"
+
+    def apply_transfer(
+        self,
+        candidate_id: str,
+        *,
+        transfer_payee_id: str,
+    ) -> None:
+        """Force-mark the candidate as a transfer to one of the user's
+        own accounts. Used when the auto-rule didn't fire because the
+        merchant wasn't linked to an account.
+
+        Does NOT update merchant memory — transfers aren't categorizations.
+        """
+        c = self._candidate(candidate_id)
+        c.prior_state = self._snapshot(c.txn)
+        c.txn.payee_id = transfer_payee_id
+        c.txn.payee_name = None
+        c.txn.category_id = None
+        c.txn.subtransactions = []
+        c.status = "decided"
