@@ -86,3 +86,20 @@ SplitEditorModal {
 #split-help {
     color: $text-muted;
 }
+
+HistoryPickerModal {
+    align: center middle;
+}
+
+#history-dialog {
+    width: 70%;
+    height: 60%;
+    border: thick $primary;
+    padding: 1 2;
+    background: $surface;
+}
+
+#history-title {
+    text-style: bold;
+    padding-bottom: 1;
+}
