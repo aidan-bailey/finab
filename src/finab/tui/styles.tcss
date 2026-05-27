@@ -25,3 +25,26 @@ Screen {
     padding: 2 4;
     color: $text-muted;
 }
+
+SyncScreen {
+    layout: horizontal;
+    width: 1fr;
+    height: 1fr;
+}
+
+SyncScreen Horizontal {
+    width: 1fr;
+    height: 1fr;
+}
+
+#sync-pending {
+    width: 32;
+    border-right: solid $primary;
+    padding: 0 1;
+    overflow-y: auto;
+}
+
+#sync-detail {
+    width: 1fr;
+    padding: 1 2;
+}

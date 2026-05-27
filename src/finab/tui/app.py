@@ -11,6 +11,7 @@ from textual.widgets import ContentSwitcher, Label, ListItem, ListView
 
 from finab.tui.data_loader import LoadedData, load_all
 from finab.tui.screens.placeholder import PlaceholderScreen
+from finab.tui.screens.sync import SyncScreen
 
 
 SCREEN_IDS = [
@@ -47,7 +48,8 @@ class FinabApp(App):
                 id="sidebar",
             )
             with ContentSwitcher(initial="screen-sync", id="content-switcher"):
-                for name, sid in SCREEN_IDS:
+                yield SyncScreen(id="screen-sync")
+                for name, sid in SCREEN_IDS[1:]:  # skip Sync (already yielded above)
                     yield PlaceholderScreen(name, id=sid)
 
     def on_mount(self) -> None:
