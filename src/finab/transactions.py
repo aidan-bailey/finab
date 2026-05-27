@@ -26,6 +26,19 @@ def _is_inflow(txn) -> bool:
     return getattr(txn, "amount", 0) > 0
 
 
+def _is_before_current_month(txn, today: Optional[date] = None) -> bool:
+    """True iff txn.date is before the first of the current month. Used to
+    skip interactive categorization for older transactions (which we still
+    push, just without a category)."""
+    if today is None:
+        today = date.today()
+    start_of_month = today.replace(day=1)
+    txn_date = getattr(txn, "date", None)
+    if not isinstance(txn_date, date):
+        return False
+    return txn_date < start_of_month
+
+
 def _is_transfer(merchant: Optional[dict]) -> bool:
     """A merchant whose YNAB record carries a transfer_account_id is a
     transfer payee — the transaction is a transfer to/from one of the
@@ -531,6 +544,14 @@ def _process_one_transaction(
         txn.subtransactions = []
         return "categorized"
 
+    # --- (d2) Pre-current-month: push with payee but no category prompt ---
+    if _is_before_current_month(txn):
+        txn.payee_id = merchant["ynab"].get("id")
+        txn.payee_name = None
+        txn.category_id = None
+        txn.subtransactions = []
+        return "categorized"
+
     # --- (e) Set payee from merchant ---
     txn.payee_id = merchant["ynab"].get("id")
     txn.payee_name = None
@@ -674,9 +695,18 @@ def sync_transactions(
                 continue   # re-process the same transaction
             if outcome == "categorized":
                 queue.add(txn)
-                merchant = store.merchant_by_finwise_id(getattr(txn, "merchant_id", None))
-                if merchant:
-                    _update_merchant_memory(store, merchant, txn)
+                # Only update merchant memory when an actual categorization
+                # decision was made — skipping transfers, no-merchant pushes,
+                # and pre-current-month auto-pushes whose category is None.
+                # Otherwise we'd clobber last_processing with an empty entry.
+                has_decision = (
+                    getattr(txn, "category_id", None) is not None
+                    or bool(getattr(txn, "subtransactions", None))
+                )
+                if has_decision:
+                    merchant = store.merchant_by_finwise_id(getattr(txn, "merchant_id", None))
+                    if merchant:
+                        _update_merchant_memory(store, merchant, txn)
             idx += 1
         # Normal end-of-loop: auto-flush whatever's pending.
         if queue.count() > 0:

@@ -646,5 +646,154 @@ class TestProcessOneTransaction(unittest.TestCase):
         self.assertEqual(txn.category_id, "c-petrol")
 
 
+class TestIsBeforeCurrentMonth(unittest.TestCase):
+    def test_before_current_month(self):
+        from datetime import date as d
+        from finab.transactions import _is_before_current_month
+        txn = MagicMock(date=d(2026, 4, 30))
+        self.assertTrue(_is_before_current_month(txn, today=d(2026, 5, 27)))
+
+    def test_first_of_current_month(self):
+        from datetime import date as d
+        from finab.transactions import _is_before_current_month
+        txn = MagicMock(date=d(2026, 5, 1))
+        self.assertFalse(_is_before_current_month(txn, today=d(2026, 5, 27)))
+
+    def test_today(self):
+        from datetime import date as d
+        from finab.transactions import _is_before_current_month
+        txn = MagicMock(date=d(2026, 5, 27))
+        self.assertFalse(_is_before_current_month(txn, today=d(2026, 5, 27)))
+
+    def test_no_date_returns_false(self):
+        from finab.transactions import _is_before_current_month
+        txn = MagicMock(spec=[])  # no .date attribute
+        self.assertFalse(_is_before_current_month(txn))
+
+
+class TestPreCurrentMonthAutoPath(unittest.TestCase):
+    """A transaction whose date is before the current month should be pushed
+    with payee resolved from the merchant, but with no category and no
+    interactive prompt."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from finab.store import ConfigStore
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmpdir.name) / "config.json"
+        self.store = ConfigStore(self.path)
+        self.merchant = self.store.add_merchant(
+            alias="Spar",
+            fw_record={"id": "fw-spar", "name": "Spar"},
+            ynab_record={"id": "yn-spar", "name": "Spar"},
+        )
+        self.store = ConfigStore(self.path)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_old_outflow_pushes_with_payee_no_category(self):
+        from datetime import date as d
+        from unittest.mock import patch
+        from finab.transactions import _process_one_transaction
+
+        txn = MagicMock()
+        txn.amount = -5000
+        txn.merchant_id = "fw-spar"
+        txn.memo = "old purchase"
+        txn.date = d(2026, 4, 15)
+        txn.subtransactions = []
+        txn.payee_id = None
+        txn.payee_name = None
+        txn.category_id = None
+
+        # Force "before current month" to True without touching the date class.
+        with patch("finab.transactions._is_before_current_month", return_value=True):
+            outcome = _process_one_transaction(
+                txn, 1, 1, 0, self.store, MagicMock(), "bid", [], []
+            )
+
+        self.assertEqual(outcome, "categorized")
+        self.assertEqual(txn.payee_id, "yn-spar")
+        self.assertIsNone(txn.category_id)
+        self.assertEqual(txn.subtransactions, [])
+
+
+class TestMemoryGateOnMissingDecision(unittest.TestCase):
+    """sync_transactions must not call _update_merchant_memory for
+    transactions that ended up with no category (transfers, no-merchant,
+    pre-current-month auto-pushes). Updating memory there would clobber
+    a previous legitimate last_processing entry."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from finab.store import ConfigStore
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmpdir.name) / "config.json"
+        self.store = ConfigStore(self.path)
+        # Seed an account so merge_and_filter doesn't filter the txn out.
+        self.store.add_account(
+            alias="Checking",
+            fw_record={"id": "fw-acc"},
+            ynab_record={"id": "yn-acc", "transfer_payee_id": "tp-1"},
+        )
+        # Seed a transfer-payee merchant: any txn for this merchant will
+        # take the transfer auto-path and return category_id=None.
+        self.merchant = self.store.add_merchant(
+            alias="Discovery Bank ZAR",
+            fw_record={"id": "fw-xfer", "name": "Discovery"},
+            ynab_record={"id": "yn-xfer-payee", "transfer_account_id": "yn-acc-2"},
+        )
+        # Seed a pre-existing last_processing on the merchant — we want to
+        # verify it's NOT overwritten.
+        self.store.set_merchant_memory(
+            self.merchant["id"],
+            categories_used={"cat-existing": 3},
+            last_processing={
+                "amount_milliunits": -1234,
+                "parent_memo": "previous",
+                "splits": [{"category_id": "cat-existing",
+                            "amount_milliunits": -1234, "memo": ""}],
+            },
+        )
+        self.store = ConfigStore(self.path)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_transfer_does_not_overwrite_last_processing(self):
+        from datetime import date as d
+        from finab.transactions import sync_transactions
+
+        fw_client = MagicMock()
+        ynab_client = MagicMock()
+        txn = MagicMock()
+        txn.import_id = "fw-tx-1"
+        txn.account_id = "fw-acc"
+        txn.amount = -9999
+        txn.merchant_id = "fw-xfer"
+        txn.memo = ""
+        txn.date = d(2026, 5, 20)
+        txn.subtransactions = []
+        txn.payee_id = None
+        txn.payee_name = None
+        txn.category_id = None
+        txn.ynab_id = None
+        fw_client.get_transactions.return_value = [txn]
+        ynab_client.get_transactions.return_value = []
+        ynab_client.get_categories.return_value = []
+        ynab_client.get_category_groups_with_categories.return_value = []
+
+        sync_transactions(fw_client, ynab_client, "bid", self.store)
+
+        m = self.store.merchant_by_finwise_id("fw-xfer")
+        # The pre-existing memory must remain untouched.
+        self.assertEqual(m["categories_used"], {"cat-existing": 3})
+        self.assertEqual(m["last_processing"]["amount_milliunits"], -1234)
+        self.assertEqual(m["last_processing"]["splits"][0]["category_id"], "cat-existing")
+
+
 if __name__ == "__main__":
     unittest.main()
