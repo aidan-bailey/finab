@@ -12,6 +12,7 @@ from textual.widgets import ContentSwitcher, Footer, Label, ListItem, ListView
 
 from finab.tui.data_loader import LoadedData, load_all
 from finab.tui.screens.accounts import AccountsScreen
+from finab.tui.screens.merchants import MerchantsScreen
 from finab.tui.screens.placeholder import PlaceholderScreen
 from finab.tui.screens.sync import SyncScreen
 from finab.tui.widgets.error_banner import ErrorBanner
@@ -71,7 +72,8 @@ class FinabApp(App):
             with ContentSwitcher(initial="screen-sync", id="content-switcher"):
                 yield SyncScreen(id="screen-sync")
                 yield AccountsScreen(id="screen-accounts")
-                for name, sid in SCREEN_IDS[2:]:  # skip Sync + Accounts
+                yield MerchantsScreen(id="screen-merchants")
+                for name, sid in SCREEN_IDS[3:]:  # skip Sync + Accounts + Merchants
                     yield PlaceholderScreen(name, id=sid)
         yield Footer()
 
@@ -83,8 +85,8 @@ class FinabApp(App):
             self._kickoff_load()
         elif self._store is not None:
             try:
-                accounts_screen = self.query_one(AccountsScreen)
-                accounts_screen.bind_data(store=self._store)
+                self.query_one(AccountsScreen).bind_data(store=self._store)
+                self.query_one(MerchantsScreen).bind_data(store=self._store)
             except Exception:
                 pass
 
@@ -117,6 +119,8 @@ class FinabApp(App):
             )
             accounts_screen = self.query_one(AccountsScreen)
             accounts_screen.bind_data(store=self._store)
+            merchants_screen = self.query_one(MerchantsScreen)
+            merchants_screen.bind_data(store=self._store)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.item is None:
@@ -179,13 +183,22 @@ class FinabApp(App):
         switcher = self.query_one("#content-switcher", ContentSwitcher)
         return switcher.current == "screen-accounts"
 
+    def _merchants_screen_active(self) -> bool:
+        from textual.widgets import ContentSwitcher
+        switcher = self.query_one("#content-switcher", ContentSwitcher)
+        return switcher.current == "screen-merchants"
+
     def action_accounts_rename(self) -> None:
         if self._accounts_screen_active():
             self.query_one(AccountsScreen).action_rename()
+        elif self._merchants_screen_active():
+            self.query_one(MerchantsScreen).action_rename()
 
     def action_accounts_relink(self) -> None:
         if self._accounts_screen_active():
             self.query_one(AccountsScreen).action_relink()
+        elif self._merchants_screen_active():
+            self.query_one(MerchantsScreen).action_relink()
 
     def action_accounts_toggle_ignore(self) -> None:
         if self._accounts_screen_active():

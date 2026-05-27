@@ -160,3 +160,13 @@ AccountsScreen {
 #accounts-list {
     height: 1fr;
 }
+
+MerchantsScreen {
+    width: 1fr;
+    height: 1fr;
+    padding: 1 2;
+}
+
+#merchants-list {
+    height: 1fr;
+}
