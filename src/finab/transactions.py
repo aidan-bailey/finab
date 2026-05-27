@@ -467,12 +467,14 @@ class _PendingQueue:
     """Holds categorized-but-not-yet-pushed transactions. Flushed on demand
     via the `f` command, at end of run, or after Ctrl+C confirmation.
 
-    Each create-txn carries `fw_uuid` (the FinWise transaction UUID set by
-    `Transaction.from_finwise` via `import_id`). On flush, we generate a
-    fresh transient `import_id` per create-txn purely so YNAB's batch
-    response echoes it back, letting us correlate which response YNAB
-    transaction maps to which input. The transient `import_id` is never
-    reused; it exists for the duration of a single API call.
+    Each create-txn enters the queue with its FinWise transaction UUID
+    sitting on `Transaction.import_id` (set by `Transaction.from_finwise`).
+    On flush, we read each FW UUID off `import_id`, then overwrite that
+    field with a fresh transient correlator UUID — sent to YNAB purely so
+    its batch response echoes the same value back, letting us map each
+    returned YNAB transaction to the corresponding FW UUID. The transient
+    `import_id` is never reused; it exists for the duration of one API
+    call.
     """
 
     def __init__(self):
@@ -502,19 +504,16 @@ class _PendingQueue:
             updates_snap = list(self.updates)
 
             # Build correlation_id -> fw_uuid map and assign transient
-            # import_ids to each create. Preserve the original FW UUID on
-            # the txn (it stays in fw_uuid attr) in case anything reads it
-            # back after flush.
+            # import_ids to each create. We read each txn's FW UUID off
+            # its current import_id (set by Transaction.from_finwise) and
+            # then overwrite import_id with a fresh transient correlator.
+            # The original FW UUID is preserved in the correlation_map
+            # alone — nothing else needs to read it off the txn.
             correlation_map: dict[str, str] = {}
             for txn in creates_snap:
                 fw_uuid = getattr(txn, "import_id", None)
                 if not fw_uuid:
                     continue
-                # Preserve the FW UUID on a side attribute. The Transaction
-                # model doesn't define this field but pydantic v2 with
-                # `extra = "allow"` would accept it; we just stash via
-                # direct attribute set.
-                txn.fw_uuid = fw_uuid
                 correlator = uuid.uuid4().hex[:32]
                 correlation_map[correlator] = fw_uuid
                 txn.import_id = correlator

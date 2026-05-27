@@ -941,6 +941,39 @@ class TestPendingQueueFlushRecordsMappings(unittest.TestCase):
         # Still succeeds; no mapping recorded since there's no tx_store.
         self.assertTrue(ok)
 
+    def test_flush_works_with_real_transaction_model(self):
+        """Regression: pydantic v2's Transaction model rejects undeclared
+        attribute assignment. The flush path must only touch declared
+        fields (import_id), not stash side data on the model."""
+        from datetime import date as d
+        from finab.models import Transaction
+        from finab.transactions import _PendingQueue
+
+        q = _PendingQueue()
+        txn = Transaction(
+            account_id="yn-acc",
+            date=d(2026, 5, 20),
+            amount=-5000,
+            import_id="fw-uuid-real",
+        )
+        q.add(txn)
+
+        ynab_client = MagicMock()
+
+        def fake_create(budget_id, txns):
+            resp = MagicMock()
+            yt = MagicMock()
+            yt.id = "yn-new"
+            yt.import_id = txns[0].import_id  # echo back the correlator
+            resp.data.transactions = [yt]
+            return resp
+
+        ynab_client.create_transactions.side_effect = fake_create
+        ok = q.flush(ynab_client, "bid", self.tx_store)
+        self.assertTrue(ok)
+        # Mapping recorded using the ORIGINAL FW UUID, not the correlator.
+        self.assertEqual(self.tx_store.synced_ynab_id("fw-uuid-real"), "yn-new")
+
 
 if __name__ == "__main__":
     unittest.main()
