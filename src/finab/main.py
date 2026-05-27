@@ -467,11 +467,9 @@ def sync_merchants(
     when needed."""
     print("\n--- Merchant Sync ---")
 
-    start_date = date.today().replace(day=1)
-
-    print(f"Fetching FinWise transactions (since {start_date})...")
+    print("Fetching FinWise transactions...")
     try:
-        fw_transactions = fw_client.get_transactions(start_date=start_date)
+        fw_transactions = fw_client.get_transactions()
         print(f"  Fetched {len(fw_transactions)} FinWise transactions")
     except Exception as e:
         print(f"Failed to fetch FinWise transactions: {e}")
