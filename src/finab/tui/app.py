@@ -182,5 +182,5 @@ class FinabApp(App):
         self.exit()
 
     def action_show_help(self) -> None:
-        # Filled in by Task 5. For now, no-op.
-        pass
+        from finab.tui.widgets.help_overlay import HelpOverlay
+        self.push_screen(HelpOverlay())

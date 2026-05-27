@@ -120,3 +120,16 @@ FlushConfirmModal {
     padding-bottom: 1;
     text-style: bold;
 }
+
+HelpOverlay {
+    align: center middle;
+}
+
+#help-dialog {
+    width: 70%;
+    height: auto;
+    max-height: 90%;
+    border: thick $accent;
+    padding: 1 2;
+    background: $surface;
+}
