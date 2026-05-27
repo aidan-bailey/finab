@@ -4,10 +4,17 @@ Extracted from finab.main to give the (future) TUI Accounts screen a
 non-interactive surface. main.py re-exports them so existing call
 sites keep working.
 
-No interactive I/O here — these helpers may call clients/stores but
-never call input() or use ANSI colour.
+No interactive I/O (no input(), no ANSI colour). Diagnostic print()
+calls inside _reconcile_store_accounts_to_ynab are retained verbatim
+from the original — they're flagged with TODO(plan-2) markers so the
+TUI work can replace them with a structured result later.
 """
 from datetime import date
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from finab.store import ConfigStore
+    from finab.ynab_client import YNABClient
 
 
 def _calculate_starting_balance(fw_acc, fw_client) -> int:
@@ -34,9 +41,9 @@ def _account_with_overrides(fw_acc, name: str, balance: int):
 
 
 def _reconcile_store_accounts_to_ynab(
-    store,
+    store: "ConfigStore",
     ynab_accounts,
-    ynab_client,
+    ynab_client: "YNABClient",
     budget_id: str,
 ) -> int:
     """For each account entry in the store, ensure its YNAB-side counterpart
@@ -91,8 +98,10 @@ def _reconcile_store_accounts_to_ynab(
                     ),
                 },
             )
+            # TODO(plan-2): replace with structured result for TUI
             print(f"  Recreated YNAB account '{name}'")
             created += 1
         except Exception as e:
+            # TODO(plan-2): replace with structured result for TUI
             print(f"  Failed to create YNAB account '{name}': {e}")
     return created
