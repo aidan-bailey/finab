@@ -429,3 +429,105 @@ class Candidate:
     # taken at the moment a user decision is applied. Used by undo() to
     # restore the pre-decision state. None on pending or auto candidates.
     prior_state: Optional[dict] = None
+
+
+class SyncEngine:
+    """State machine for phase 3 (transaction sync).
+
+    Construction does the work of `merge_and_filter_transactions` + the
+    sort + the auto-rule pass from the original `_process_one_transaction`.
+    The result is `self.candidates`, a list of Candidate objects in the
+    order the UI should walk them.
+
+    The engine never prints, never reads stdin, and never calls a network
+    client during construction — flush() is the only method that calls
+    YNAB.
+    """
+
+    def __init__(
+        self,
+        *,
+        fw_transactions,
+        ynab_transactions,
+        ynab_categories,
+        store,
+        tx_store,
+    ):
+        self._store = store
+        self._ynab_categories = ynab_categories
+
+        # 1. Dedup and sort.
+        merged = merge_and_filter_transactions(
+            fw_transactions, ynab_transactions, store, tx_store
+        )
+        merged.sort(key=_sort_key(store))
+
+        # 2. Build Candidate per txn and apply auto-rules.
+        self.candidates: list[Candidate] = [
+            self._build_candidate(txn) for txn in merged
+        ]
+
+    def _build_candidate(self, txn) -> Candidate:
+        """Construct a Candidate around `txn` and apply auto-rules.
+
+        Auto-rules, in priority order — same as _process_one_transaction:
+          (a) inflow: positive amount + inflow category exists
+          (b) transfer: txn's merchant links to an account's transfer payee
+          (c) no-merchant: no merchant resolvable
+          (d) pre-month: txn dated before first of current month, with merchant
+        Otherwise: status = pending.
+        """
+        # `txn.import_id` is now our durable id (set by merge_and_filter_transactions).
+        cid = txn.import_id
+        candidate = Candidate(id=cid, txn=txn)
+
+        # (a) Inflow
+        if _is_inflow(txn):
+            inflow_id = _find_inflow_category(self._ynab_categories)
+            if inflow_id:
+                txn.category_id = inflow_id
+                txn.subtransactions = []
+                candidate.status = "auto"
+                candidate.auto_reason = "inflow"
+                return candidate
+            # No inflow category — fall through to merchant logic
+            # (matches today's _process_one_transaction).
+
+        merchant = None
+        fw_mid = getattr(txn, "merchant_id", None)
+        if fw_mid:
+            merchant = self._store.merchant_by_finwise_id(fw_mid)
+
+        # (b) Transfer
+        if _is_transfer(merchant):
+            txn.payee_id = merchant["ynab"]["id"]
+            txn.payee_name = None
+            txn.category_id = None
+            txn.subtransactions = []
+            candidate.status = "auto"
+            candidate.auto_reason = "transfer"
+            return candidate
+
+        # (c) No merchant
+        if not merchant:
+            txn.category_id = None
+            txn.subtransactions = []
+            candidate.status = "auto"
+            candidate.auto_reason = "no-merchant"
+            return candidate
+
+        # (d) Before current month
+        if _is_before_current_month(txn):
+            txn.payee_id = merchant["ynab"].get("id")
+            txn.payee_name = None
+            txn.category_id = None
+            txn.subtransactions = []
+            candidate.status = "auto"
+            candidate.auto_reason = "pre-month"
+            return candidate
+
+        # Default: pending — user must decide. We still set the payee from
+        # the merchant since that's not a decision the user makes.
+        txn.payee_id = merchant["ynab"].get("id")
+        txn.payee_name = None
+        return candidate

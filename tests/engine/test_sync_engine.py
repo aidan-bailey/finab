@@ -24,3 +24,172 @@ class TestCandidate:
         c = Candidate(id="abc", txn=object(), status="auto", auto_reason="inflow")
         assert c.status == "auto"
         assert c.auto_reason == "inflow"
+
+
+from pathlib import Path
+
+from finab.engine.sync import SyncEngine
+from finab.models import Transaction
+from finab.store import ConfigStore
+from finab.transactions import TransactionsStore
+
+
+def _build_txn(
+    *,
+    fw_uuid: str,
+    amount: int,
+    merchant_id: str = None,
+    account_id: str,
+    date_str: str = "2026-05-22",
+    memo: str = "test",
+    is_transfer: bool = False,
+):
+    """Construct a Transaction matching what FinWiseClient produces."""
+    from datetime import date as date_cls
+    y, m, d = (int(x) for x in date_str.split("-"))
+    return Transaction(
+        import_id=fw_uuid,
+        amount=amount,
+        date=date_cls(y, m, d),
+        memo=memo,
+        merchant_id=merchant_id,
+        account_id=account_id,
+        is_transfer=is_transfer,
+    )
+
+
+def _seeded_store(tmp_path: Path) -> ConfigStore:
+    """Return a ConfigStore with one mapped account and no merchants."""
+    store = ConfigStore(tmp_path / "config.json")
+    store.add_account(
+        alias="Chase",
+        fw_record={"id": "fw-acc-1", "name": "Chase", "type": "checking", "balance": 0, "currency_code": "USD"},
+        ynab_record={"id": "yn-acc-1", "name": "Chase", "type": "checking", "balance": 0, "transfer_payee_id": "yn-tpayee-1"},
+        ignore_transactions=False,
+    )
+    return store
+
+
+class TestSyncEngineLoad:
+    def test_empty_inputs_produces_empty_candidates(self, tmp_path):
+        store = ConfigStore(tmp_path / "config.json")
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        engine = SyncEngine(
+            fw_transactions=[],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        assert engine.candidates == []
+
+    def test_inflow_sets_status_auto(self, tmp_path):
+        """A positive-amount transaction should auto-resolve when an
+        'Inflow: Ready to Assign' category exists."""
+        # Stub category object — only `id`, `name`, `hidden`, `deleted` are read.
+        class FakeCategory:
+            def __init__(self, id, name):
+                self.id = id; self.name = name; self.hidden = False; self.deleted = False
+        store = _seeded_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        txn = _build_txn(fw_uuid="fw-1", amount=12345, account_id="fw-acc-1")
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store,
+            tx_store=tx_store,
+        )
+        assert len(engine.candidates) == 1
+        c = engine.candidates[0]
+        assert c.status == "auto"
+        assert c.auto_reason == "inflow"
+        assert str(c.txn.category_id) == "cat-rta"
+
+    def test_no_merchant_sets_status_auto(self, tmp_path):
+        store = _seeded_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        txn = _build_txn(fw_uuid="fw-2", amount=-4200, account_id="fw-acc-1", merchant_id=None)
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        assert len(engine.candidates) == 1
+        c = engine.candidates[0]
+        assert c.status == "auto"
+        assert c.auto_reason == "no-merchant"
+
+    def test_unknown_account_is_dropped_by_dedup(self, tmp_path):
+        """merge_and_filter_transactions drops txns whose account isn't
+        mapped — those should not appear as candidates at all."""
+        store = ConfigStore(tmp_path / "config.json")  # no accounts mapped
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        txn = _build_txn(fw_uuid="fw-3", amount=-1000, account_id="fw-unknown")
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        assert engine.candidates == []
+
+    def test_pre_current_month_sets_status_auto(self, tmp_path):
+        """A txn dated before the first of the current month, with a
+        known merchant, should auto-resolve with reason='pre-month'."""
+        store = _seeded_store(tmp_path)
+        store.add_merchant(
+            alias="OldShop",
+            fw_record={"id": "fw-merchant-1", "name": "OldShop", "samples": []},
+            ynab_record={"id": "yn-pay-1", "name": "OldShop", "transfer_account_id": None},
+        )
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        # 2000-01-01 is unambiguously before 'today' in this codebase's lifetime
+        txn = _build_txn(
+            fw_uuid="fw-4", amount=-500,
+            account_id="fw-acc-1", merchant_id="fw-merchant-1",
+            date_str="2000-01-01",
+        )
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        assert len(engine.candidates) == 1
+        c = engine.candidates[0]
+        assert c.status == "auto"
+        assert c.auto_reason == "pre-month"
+
+    def test_unresolved_txn_stays_pending(self, tmp_path):
+        """Current-month txn with a known merchant that isn't a transfer
+        payee — engine has no auto-rule for it, user must decide."""
+        from datetime import date as date_cls
+        store = _seeded_store(tmp_path)
+        store.add_merchant(
+            alias="Costco",
+            fw_record={"id": "fw-merchant-2", "name": "Costco", "samples": []},
+            ynab_record={"id": "yn-pay-2", "name": "Costco", "transfer_account_id": None},
+        )
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        today = date_cls.today()
+        txn = _build_txn(
+            fw_uuid="fw-5", amount=-8421,
+            account_id="fw-acc-1", merchant_id="fw-merchant-2",
+            date_str=f"{today.year:04d}-{today.month:02d}-{today.day:02d}",
+        )
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        assert len(engine.candidates) == 1
+        c = engine.candidates[0]
+        assert c.status == "pending"
+        assert c.auto_reason is None
