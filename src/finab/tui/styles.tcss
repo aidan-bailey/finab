@@ -1,0 +1,27 @@
+Screen {
+    layout: horizontal;
+}
+
+#sidebar {
+    width: 18;
+    border-right: thick $primary;
+    background: $surface;
+}
+
+#sidebar > ListItem {
+    padding: 0 1;
+}
+
+#sidebar > ListItem.--highlight {
+    background: $primary;
+    color: $background;
+}
+
+#content-switcher {
+    width: 1fr;
+}
+
+.placeholder-body {
+    padding: 2 4;
+    color: $text-muted;
+}
