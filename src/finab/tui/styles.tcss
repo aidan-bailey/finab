@@ -133,3 +133,20 @@ HelpOverlay {
     padding: 1 2;
     background: $surface;
 }
+
+AccountLinkPicker {
+    align: center middle;
+}
+
+#account-picker-dialog {
+    width: 60%;
+    height: 60%;
+    border: thick $primary;
+    padding: 1 2;
+    background: $surface;
+}
+
+#account-picker-title {
+    text-style: bold;
+    padding-bottom: 1;
+}

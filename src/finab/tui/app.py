@@ -13,6 +13,7 @@ from textual.widgets import ContentSwitcher, Footer, Label, ListItem, ListView
 from finab.tui.data_loader import LoadedData, load_all
 from finab.tui.screens.placeholder import PlaceholderScreen
 from finab.tui.screens.sync import SyncScreen
+from finab.tui.widgets.error_banner import ErrorBanner
 
 
 
@@ -57,6 +58,7 @@ class FinabApp(App):
         self.loaded: LoadedData | None = None
 
     def compose(self) -> ComposeResult:
+        yield ErrorBanner(id="error-banner")
         with Horizontal():
             yield ListView(
                 *[ListItem(Label(name), id=f"item-{sid}") for name, sid in SCREEN_IDS],
@@ -75,6 +77,17 @@ class FinabApp(App):
         if self._fw_client and self._ynab_client and self._budget_id:
             self._kickoff_load()
 
+    def _render_error_banner(self) -> None:
+        """Update the error banner from self.loaded.error (if any)."""
+        try:
+            banner = self.query_one("#error-banner", ErrorBanner)
+        except Exception:
+            return
+        if self.loaded is not None and self.loaded.error is not None:
+            banner.show(f"Fetch error: {self.loaded.error}")
+        else:
+            banner.hide()
+
     @work(exclusive=True)
     async def _kickoff_load(self) -> None:
         self.loaded = await load_all(
@@ -82,6 +95,7 @@ class FinabApp(App):
             ynab_client=self._ynab_client,
             budget_id=self._budget_id,
         )
+        self._render_error_banner()
         if self.loaded.error is None and self._store and self._tx_store:
             from finab.tui.screens.sync import SyncScreen
             sync_screen = self.query_one(SyncScreen)
