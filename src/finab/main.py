@@ -42,6 +42,15 @@ def _prompt_alias_required(prompt: str, default: Optional[str] = None) -> str:
         print("Alias is required. Please enter a value.")
 
 
+def _prompt_yes_no(prompt: str, default: bool = False) -> bool:
+    """Ask a yes/no question. Empty input returns `default`."""
+    suffix = " [Y/n]: " if default else " [y/N]: "
+    raw = input(prompt + suffix).strip().lower()
+    if not raw:
+        return default
+    return raw in ("y", "yes")
+
+
 def _gather_pickable_entries(store: "ConfigStore") -> list[dict]:
     """Flat list of all alias-selectable entries: merchants first, then accounts."""
     entries = []
@@ -409,6 +418,10 @@ def sync_accounts(
             f"Enter YNAB account name for FinWise account '{fw_acc.name}'",
             default=fw_acc.name,
         )
+        ignore_transactions = _prompt_yes_no(
+            f"Ignore transactions for '{alias}'? (parent/aggregator accounts only)",
+            default=False,
+        )
 
         match = ynab_by_name.get(normalize_alias(alias))
         if match:
@@ -426,8 +439,15 @@ def sync_accounts(
                 "balance": match.balance,
                 "transfer_payee_id": match.transfer_payee_id,
             }
-            store.add_account(alias=alias, fw_record=fw_record, ynab_record=ynab_record)
+            store.add_account(
+                alias=alias,
+                fw_record=fw_record,
+                ynab_record=ynab_record,
+                ignore_transactions=ignore_transactions,
+            )
             print(f"Linked '{fw_acc.name}' -> existing YNAB account '{match.name}'")
+            if ignore_transactions:
+                print(_dim(f"  (transactions for '{alias}' will be ignored)"))
             continue
 
         # Create on YNAB side
@@ -449,8 +469,11 @@ def sync_accounts(
                 alias=alias,
                 fw_record=fw_record,
                 ynab_record=to_dict(new_record),
+                ignore_transactions=ignore_transactions,
             )
             print(f"Created YNAB account '{alias}'")
+            if ignore_transactions:
+                print(_dim(f"  (transactions for '{alias}' will be ignored)"))
         except Exception as e:
             print(f"Failed to create YNAB account '{alias}': {e}")
             continue

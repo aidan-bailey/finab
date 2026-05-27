@@ -125,6 +125,53 @@ class TestSyncAccounts(unittest.TestCase):
         self.assertIsNotNone(linked)
         self.assertEqual(linked["alias"], "Brand New Account")
 
+    def test_marks_account_ignore_transactions_when_user_answers_yes(self):
+        """When the user answers 'y' to the ignore-transactions prompt during
+        account add, the resulting store entry should be flagged."""
+        self.fw_client.get_accounts.return_value = [
+            self._fw_account("fw-zar", "Discovery Bank ZAR")
+        ]
+        self.ynab_client.get_accounts.return_value = []
+        self.fw_client.get_transactions.return_value = []
+        created = self._ynab_account("yn-zar", "Discovery Bank ZAR")
+        self.ynab_client.create_account.return_value = MagicMock(
+            data=MagicMock(account=created)
+        )
+
+        from finab.main import sync_accounts
+        # First input call answers the alias prompt; second answers y/N.
+        with patch(
+            "finab.main.input", create=True,
+            side_effect=["Discovery Bank ZAR", "y"],
+        ):
+            sync_accounts(self.fw_client, self.ynab_client, "bid", self.store)
+
+        acc = self.store.account_by_finwise_id("fw-zar")
+        self.assertIsNotNone(acc)
+        self.assertTrue(acc["ignore_transactions"])
+
+    def test_account_not_ignored_when_user_answers_no(self):
+        """The y/N prompt defaults to N — empty input means do-not-ignore."""
+        self.fw_client.get_accounts.return_value = [
+            self._fw_account("fw-1", "Checking")
+        ]
+        self.ynab_client.get_accounts.return_value = []
+        self.fw_client.get_transactions.return_value = []
+        created = self._ynab_account("yn-1", "Checking")
+        self.ynab_client.create_account.return_value = MagicMock(
+            data=MagicMock(account=created)
+        )
+
+        from finab.main import sync_accounts
+        with patch(
+            "finab.main.input", create=True,
+            side_effect=["Checking", ""],  # empty for y/N → default False
+        ):
+            sync_accounts(self.fw_client, self.ynab_client, "bid", self.store)
+
+        acc = self.store.account_by_finwise_id("fw-1")
+        self.assertFalse(acc["ignore_transactions"])
+
     def test_persisted_finwise_id_in_store_matches_what_lookup_expects(self):
         """Regression: ensure that after add_account, the store's
         account_by_finwise_id can find the account via its FinWise id.

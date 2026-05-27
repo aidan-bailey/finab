@@ -99,13 +99,20 @@ class ConfigStore:
     def merchants(self) -> Iterable[dict]:
         return self._data["merchants"].values()
 
-    def add_account(self, alias: str, fw_record: dict, ynab_record: dict) -> dict:
+    def add_account(
+        self,
+        alias: str,
+        fw_record: dict,
+        ynab_record: dict,
+        ignore_transactions: bool = False,
+    ) -> dict:
         internal_id = str(uuid.uuid4())
         account = {
             "id": internal_id,
             "alias": alias,
             "finwise": dict(fw_record),
             "ynab": dict(ynab_record),
+            "ignore_transactions": bool(ignore_transactions),
         }
         self._data["accounts"][internal_id] = account
         self._rebuild_indexes()

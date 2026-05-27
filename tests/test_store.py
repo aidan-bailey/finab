@@ -61,10 +61,28 @@ class TestConfigStoreAccounts(unittest.TestCase):
         self.assertEqual(acc["finwise"], fw)
         self.assertEqual(acc["ynab"], yn)
         self.assertTrue(acc["id"])
+        # Default for ignore_transactions is False.
+        self.assertEqual(acc["ignore_transactions"], False)
 
         # Reload from disk: data round-trips
         store2 = ConfigStore(self.path)
         self.assertEqual(list(store2.accounts()), [acc])
+
+    def test_add_account_with_ignore_transactions_persists_flag(self):
+        store = ConfigStore(self.path)
+        acc = store.add_account(
+            alias="Discovery Bank ZAR",
+            fw_record={"id": "fw-zar", "name": "Discovery Bank ZAR"},
+            ynab_record={"id": "yn-zar", "name": "Discovery Bank ZAR"},
+            ignore_transactions=True,
+        )
+
+        self.assertTrue(acc["ignore_transactions"])
+
+        # Round-trips through disk.
+        store2 = ConfigStore(self.path)
+        loaded = store2.account_by_finwise_id("fw-zar")
+        self.assertTrue(loaded["ignore_transactions"])
 
     def test_account_by_finwise_id_lookup(self):
         store = ConfigStore(self.path)
