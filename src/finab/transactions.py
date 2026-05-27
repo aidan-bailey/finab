@@ -209,6 +209,7 @@ def _color(code: str, s: str) -> str:
 
 def _bold(s: str) -> str:   return _color("1", s)
 def _dim(s: str) -> str:    return _color("2", s)
+def _green(s: str) -> str:  return _color("32", s)
 def _cyan(s: str) -> str:   return _color("36", s)
 def _yellow(s: str) -> str: return _color("33", s)
 
@@ -492,11 +493,15 @@ class _PendingQueue:
         creates_snap = list(self.creates)
         updates_snap = list(self.updates)
         if creates_snap:
+            print(f"  Pushing {len(creates_snap)} new transaction(s) to YNAB...")
             ynab_client.create_transactions(budget_id, creates_snap)
             self.creates.clear()
+            print(f"  → Created {len(creates_snap)} transaction(s)")
         if updates_snap:
+            print(f"  Pushing {len(updates_snap)} updated transaction(s) to YNAB...")
             ynab_client.update_transactions(budget_id, updates_snap)
             self.updates.clear()
+            print(f"  → Updated {len(updates_snap)} transaction(s)")
         return True
 
 
@@ -619,12 +624,15 @@ def _process_one_transaction(
       "quit"        — user requested to quit categorizing; caller should
                       break the loop and auto-flush at end.
     """
+    amount_str = f"{txn.amount / 1000:.2f}"
+
     # --- (a) Positive amount: auto-inflow ---
     if _is_inflow(txn):
         inflow_id = _find_inflow_category(ynab_categories)
         if inflow_id:
             txn.category_id = inflow_id
             txn.subtransactions = []
+            print(f"  {_dim(f'[{idx}/{total}]')} {_green('auto-inflow')} {amount_str} -> Ready to Assign")
             return "categorized"
         # If we couldn't find an inflow category, fall through and let the
         # user pick one manually like any other transaction.
@@ -641,12 +649,15 @@ def _process_one_transaction(
         txn.payee_name = None
         txn.category_id = None
         txn.subtransactions = []
+        print(f"  {_dim(f'[{idx}/{total}]')} {_cyan('auto-transfer')} {amount_str} -> {merchant.get('alias', '?')}")
         return "categorized"
 
     # --- (d) No merchant: push uncategorized ---
     if not merchant:
         txn.category_id = None
         txn.subtransactions = []
+        memo = getattr(txn, "memo", "") or "(no memo)"
+        print(f"  {_dim(f'[{idx}/{total}]')} {_yellow('no-merchant')} {amount_str} {_dim('-- pushed uncategorized:')} {memo}")
         return "categorized"
 
     # --- (d2) Pre-current-month: push with payee but no category prompt ---
@@ -655,6 +666,7 @@ def _process_one_transaction(
         txn.payee_name = None
         txn.category_id = None
         txn.subtransactions = []
+        print(f"  {_dim(f'[{idx}/{total}]')} {_dim('pre-month')} {amount_str} -> {merchant.get('alias', '?')} {_dim('(no category)')}")
         return "categorized"
 
     # --- (e) Set payee from merchant ---
@@ -669,7 +681,6 @@ def _process_one_transaction(
     print(f"\n{_cyan('━━━')}{_bold(_cyan(header))}{_cyan(bar)}")
     print(f"  {_dim('Merchant:')}  {merchant.get('alias', '?')}")
     print(f"  {_dim('Date:')}      {getattr(txn, 'date', '?')}")
-    amount_str = f"{txn.amount / 1000:.2f}"
     print(f"  {_dim('Amount:')}    {amount_str}")
     print(f"  {_dim('Memo:')}      {getattr(txn, 'memo', '') or _dim('(none)')}")
 
@@ -697,6 +708,7 @@ def _process_one_transaction(
         raw = input(_cyan("  > ")).strip().lower()
         if raw == "" and repeat_available:
             _apply_repeat(merchant, txn)
+            print(f"  {_green('→ repeated')} last processing for this amount")
             return "categorized"
         if raw == "f" and unflushed_count:
             return "flush"
@@ -768,15 +780,27 @@ def sync_transactions(
     if tx_store is None:
         tx_store = TransactionsStore()
 
+    print("Fetching FinWise transactions...")
     fw_txns = fw_client.get_transactions()
+    print(f"  Fetched {_yellow(str(len(fw_txns)))} FinWise transactions")
+
+    print("Fetching YNAB transactions...")
     ynab_txns = ynab_client.get_transactions(budget_id)
+    print(f"  Fetched {_yellow(str(len(ynab_txns)))} YNAB transactions")
+
+    print("Fetching YNAB categories...")
     ynab_categories = ynab_client.get_categories(budget_id)
+    print(f"  Fetched {_yellow(str(len(ynab_categories)))} YNAB categories")
+
+    print("Fetching YNAB category groups...")
     category_groups = ynab_client.get_category_groups_with_categories(budget_id)
+    print(f"  Fetched {_yellow(str(len(category_groups)))} YNAB category groups")
 
     candidates = merge_and_filter_transactions(fw_txns, ynab_txns, store, tx_store)
     candidates.sort(key=_sort_key(store))
     total = len(candidates)
-    print(f"Transactions to process: {_yellow(str(total))}")
+    print(f"\nAfter dedup: {_yellow(str(total))} transactions to process "
+          f"{_dim(f'(from {len(fw_txns)} FinWise)')}")
 
     queue = _PendingQueue()
     try:

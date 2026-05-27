@@ -367,24 +367,28 @@ def sync_accounts(
     and a corresponding YNAB account, creating new YNAB accounts when needed."""
     print("\n--- Account Sync ---")
 
+    print("Fetching FinWise accounts...")
     try:
         fw_accounts = fw_client.get_accounts()
-        print(f"FinWise Accounts: {len(fw_accounts)}")
+        print(f"  Fetched {len(fw_accounts)} FinWise accounts")
     except Exception as e:
         print(f"Failed to fetch FinWise accounts: {e}")
         return
 
+    print("Fetching YNAB accounts...")
     try:
         ynab_accounts = ynab_client.get_accounts(budget_id)
-        print(f"YNAB Accounts: {len(ynab_accounts)}")
+        print(f"  Fetched {len(ynab_accounts)} YNAB accounts")
     except Exception as e:
         print(f"Failed to fetch YNAB accounts: {e}")
         return
 
+    print("Refreshing nested records...")
     store.refresh_records(fw_accounts=fw_accounts, ynab_accounts=ynab_accounts)
 
     # Reconcile: push any store accounts that lack a valid YNAB-side record
     # into YNAB. After this, every store account has a live YNAB counterpart.
+    print("Reconciling store accounts -> YNAB...")
     pushed = _reconcile_store_accounts_to_ynab(
         store, ynab_accounts, ynab_client, budget_id
     )
@@ -465,22 +469,28 @@ def sync_merchants(
 
     start_date = date.today().replace(day=1)
 
+    print(f"Fetching FinWise transactions (since {start_date})...")
     try:
         fw_transactions = fw_client.get_transactions(start_date=start_date)
+        print(f"  Fetched {len(fw_transactions)} FinWise transactions")
     except Exception as e:
         print(f"Failed to fetch FinWise transactions: {e}")
         return
 
+    print("Fetching YNAB payees...")
     try:
         ynab_payees = ynab_client.get_payees(budget_id)
+        print(f"  Fetched {len(ynab_payees)} YNAB payees")
     except Exception as e:
         print(f"Failed to fetch YNAB payees: {e}")
         return
 
+    print("Refreshing nested records...")
     store.refresh_records(ynab_payees=ynab_payees)
 
     # Reconcile: push any store merchants whose YNAB payee no longer exists
     # (or whose ynab record is empty) into YNAB.
+    print("Reconciling store merchants -> YNAB...")
     pushed = _reconcile_store_merchants_to_ynab(
         store, ynab_payees, ynab_client, budget_id
     )
