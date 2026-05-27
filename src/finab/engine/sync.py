@@ -9,8 +9,9 @@ inside merge_and_filter_transactions are retained verbatim from the
 original — they emit dedup diagnostics (counts and warnings) and aren't
 worth refactoring out at this stage of the migration.
 """
+from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 if TYPE_CHECKING:
     from finab.store import ConfigStore
@@ -398,3 +399,33 @@ def _sort_key(store: "ConfigStore"):
         d = getattr(txn, "date", None)
         return (alias, d if d is not None else date.max)
     return key
+
+
+CandidateStatus = Literal["pending", "auto", "decided", "flushed"]
+"""
+pending  — needs user input
+auto     — engine auto-applied (inflow/transfer/no-merchant/pre-month)
+decided  — user applied a category/split/transfer
+flushed  — pushed to YNAB
+"""
+
+
+AutoReason = Literal["inflow", "transfer", "no-merchant", "pre-month"]
+
+
+@dataclass
+class Candidate:
+    """One transaction in the per-run workflow.
+
+    `txn` is the FinWise-side Transaction; `merge_and_filter_transactions`
+    may have already mutated its `import_id` to our durable id, and may
+    have set `ynab_id` if this is an UPDATE rather than a CREATE.
+    """
+    id: str                              # stable; we use txn.import_id (durable our_id)
+    txn: Any                             # finab.models.Transaction — Any to avoid import cycle here
+    status: CandidateStatus = "pending"
+    auto_reason: Optional[AutoReason] = None
+    # Snapshot of {category_id, subtransactions, payee_id, payee_name, memo}
+    # taken at the moment a user decision is applied. Used by undo() to
+    # restore the pre-decision state. None on pending or auto candidates.
+    prior_state: Optional[dict] = None
