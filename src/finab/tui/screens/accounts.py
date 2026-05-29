@@ -166,3 +166,127 @@ class AccountsScreen(Container):
         # Plan 3 scope: bell. Plan 4 adds a proper picker over fetched
         # YNAB accounts (not the store's accounts).
         self.app.bell()
+
+    def action_link(self) -> None:
+        """Map an unmapped FW account: prompt for alias, then either
+        link to a YNAB account by name match or create a new one.
+
+        On a mapped row, this is a no-op + bell (relink to a different
+        YNAB account is a separate workflow not covered in Plan 4)."""
+        fw = self._current_unmapped_fw()
+        if fw is None:
+            self.app.bell()
+            return
+        if self._ynab_client is None or self._budget_id is None:
+            # Test paths without clients hit this; nothing to do.
+            self.app.bell()
+            return
+
+        from finab.tui.widgets.alias_input import AliasInputModal
+        modal = AliasInputModal(
+            prompt=f"Alias for '{fw.name}':",
+            default=fw.name,
+        )
+
+        def _on_alias(alias):
+            if alias is None:
+                return
+            self._continue_link_flow(fw, alias)
+
+        self.app.push_screen(modal, callback=_on_alias)
+
+    def _continue_link_flow(self, fw, alias: str) -> None:
+        """After the alias is chosen, try to match against existing YNAB
+        accounts; if no match, confirm-and-create."""
+        from finab.store import normalize_alias
+        match = next(
+            (
+                a for a in self._ynab_accounts
+                if normalize_alias(getattr(a, "name", "")) == normalize_alias(alias)
+                and not getattr(a, "deleted", False)
+                and not getattr(a, "closed", False)
+            ),
+            None,
+        )
+        if match is not None:
+            self._link_to_existing(fw, alias, match)
+            return
+
+        from finab.tui.widgets.yes_no_modal import YesNoModal
+        modal = YesNoModal(
+            message=f"No YNAB account named '{alias}' exists. Create a new one?",
+        )
+
+        def _on_confirm(answer):
+            if not answer:
+                return
+            self._create_and_link(fw, alias)
+
+        self.app.push_screen(modal, callback=_on_confirm)
+
+    def _link_to_existing(self, fw, alias: str, ynab_acc) -> None:
+        """Link an unmapped FW account to an existing YNAB account."""
+        fw_record = {
+            "id": fw.finwise_id,
+            "name": fw.name,
+            "type": getattr(fw, "type", "checking"),
+            "balance": getattr(fw, "balance", 0),
+            "currency_code": getattr(fw, "currency_code", "USD"),
+        }
+        ynab_record = {
+            "id": str(getattr(ynab_acc, "id", "") or getattr(ynab_acc, "ynab_id", "")),
+            "name": ynab_acc.name,
+            "type": getattr(ynab_acc, "type", "checking"),
+            "balance": getattr(ynab_acc, "balance", 0),
+            "transfer_payee_id": getattr(ynab_acc, "transfer_payee_id", None),
+        }
+        self._store.add_account(
+            alias=alias,
+            fw_record=fw_record,
+            ynab_record=ynab_record,
+            ignore_transactions=False,
+        )
+        self.refresh_rows()
+
+    def _create_and_link(self, fw, alias: str) -> None:
+        """Create a new YNAB account and link the FW account to it."""
+        from finab.models import Account
+        payload = Account(
+            name=alias,
+            type=getattr(fw, "type", None) or "checking",
+            balance=getattr(fw, "balance", 0) or 0,
+            currency_code=getattr(fw, "currency_code", "") or "",
+        )
+        try:
+            response = self._ynab_client.create_account(self._budget_id, payload)
+        except Exception:
+            self.app.bell()
+            return
+        new_record = response.data.account
+        new_id = str(getattr(new_record, "id", "") or getattr(new_record, "ynab_id", ""))
+        ynab_record = {
+            "id": new_id,
+            "name": getattr(new_record, "name", alias),
+            "type": getattr(new_record, "type", payload.type),
+            "balance": getattr(new_record, "balance", payload.balance),
+            "transfer_payee_id": (
+                str(new_record.transfer_payee_id)
+                if getattr(new_record, "transfer_payee_id", None) is not None
+                else None
+            ),
+        }
+        fw_record = {
+            "id": fw.finwise_id,
+            "name": fw.name,
+            "type": getattr(fw, "type", "checking"),
+            "balance": getattr(fw, "balance", 0),
+            "currency_code": getattr(fw, "currency_code", "USD"),
+        }
+        self._store.add_account(
+            alias=alias,
+            fw_record=fw_record,
+            ynab_record=ynab_record,
+            ignore_transactions=False,
+        )
+        self._ynab_accounts.append(new_record)
+        self.refresh_rows()

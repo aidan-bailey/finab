@@ -98,3 +98,128 @@ async def test_accounts_screen_shows_unmapped_fw_accounts(tmp_path):
         assert ac.row_count() == 3
         # The unmapped row uses '!' glyph.
         assert ac.has_unmapped_for("fw-c")
+
+
+class _FakeYnabAccount2:
+    """Stub for the YNAB account-side data, including the .data.account
+    response shape that YNABClient.create_account returns."""
+    def __init__(self, id, name, type="checking"):
+        self.id = id
+        self.ynab_id = id
+        self.name = name
+        self.type = type
+        self.balance = 0
+        self.deleted = False
+        self.closed = False
+        self.transfer_payee_id = f"tp-{id}"
+
+
+class _StubYnabClient:
+    """Just enough of YNABClient for the mapping flow tests."""
+    def __init__(self):
+        self.created = []
+
+    def create_account(self, budget_id, account):
+        new = _FakeYnabAccount2(
+            id=f"yn-new-{len(self.created)}",
+            name=account.name,
+            type=account.type,
+        )
+        self.created.append(new)
+
+        class _Resp:
+            class data:
+                pass
+
+        resp = _Resp()
+        resp.data.account = new
+        return resp
+
+
+@pytest.mark.asyncio
+async def test_link_unmapped_account_to_new_ynab(tmp_path):
+    """Type alias that doesn't match → confirm create → YNAB account created + linked."""
+    from finab.store import ConfigStore
+    from finab.tui.app import FinabApp
+    from finab.tui.screens.accounts import AccountsScreen
+    from finab.tui.widgets.alias_input import AliasInputModal
+    from finab.tui.widgets.yes_no_modal import YesNoModal
+    from textual.widgets import ContentSwitcher
+
+    store = ConfigStore(tmp_path / "config.json")
+    fw_accounts = [_FakeFwAccount("fw-new", "BoA Card", type="creditCard")]
+    ynab_client = _StubYnabClient()
+
+    app = FinabApp(store=store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        switcher = app.query_one("#content-switcher", ContentSwitcher)
+        switcher.current = "screen-accounts"
+        await pilot.pause()
+        ac = app.query_one(AccountsScreen)
+        ac.bind_data(
+            store=store,
+            fw_accounts=fw_accounts,
+            ynab_accounts=[],
+            ynab_client=ynab_client,
+            budget_id="bid",
+        )
+        await pilot.pause()
+        ac.set_cursor(0)
+        await pilot.pause()
+        ac.action_link()
+        await pilot.pause()
+        assert isinstance(app.screen, AliasInputModal)
+        app.screen.dismiss("BoA Credit")
+        await pilot.pause()
+        assert isinstance(app.screen, YesNoModal)
+        await pilot.press("y")
+        await pilot.pause()
+        # YNAB account creation happened.
+        assert len(ynab_client.created) == 1
+        # Store now has the new account.
+        acc = store.account_by_finwise_id("fw-new")
+        assert acc is not None
+        assert acc["alias"] == "BoA Credit"
+
+
+@pytest.mark.asyncio
+async def test_link_unmapped_account_to_existing_ynab(tmp_path):
+    """Alias matches an existing YNAB account → link without creating new."""
+    from finab.store import ConfigStore
+    from finab.tui.app import FinabApp
+    from finab.tui.screens.accounts import AccountsScreen
+    from finab.tui.widgets.alias_input import AliasInputModal
+    from textual.widgets import ContentSwitcher
+
+    store = ConfigStore(tmp_path / "config.json")
+    fw_accounts = [_FakeFwAccount("fw-new", "BoA Card")]
+    ynab_accounts = [_FakeYnabAccount2("yn-boa", "BoA Credit")]
+    ynab_client = _StubYnabClient()
+
+    app = FinabApp(store=store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        switcher = app.query_one("#content-switcher", ContentSwitcher)
+        switcher.current = "screen-accounts"
+        await pilot.pause()
+        ac = app.query_one(AccountsScreen)
+        ac.bind_data(
+            store=store,
+            fw_accounts=fw_accounts,
+            ynab_accounts=ynab_accounts,
+            ynab_client=ynab_client,
+            budget_id="bid",
+        )
+        await pilot.pause()
+        ac.set_cursor(0)
+        ac.action_link()
+        await pilot.pause()
+        assert isinstance(app.screen, AliasInputModal)
+        app.screen.dismiss("BoA Credit")
+        await pilot.pause()
+        # No YesNoModal — match found → linked directly.
+        assert ynab_client.created == []
+        acc = store.account_by_finwise_id("fw-new")
+        assert acc is not None
+        assert acc["ynab"]["id"] == "yn-boa"
