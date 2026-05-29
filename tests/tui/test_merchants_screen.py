@@ -176,3 +176,97 @@ async def test_link_unmapped_merchant_to_new_payee(tmp_path):
         assert m is not None
         # store.finwise is a dict keyed by fw_id
         assert "fw-merch-x" in m["finwise"]
+
+
+@pytest.mark.asyncio
+async def test_merchants_screen_has_detail_pane(tmp_path):
+    """MerchantsScreen renders both a list pane and a detail pane."""
+    from finab.tui.app import FinabApp
+    from finab.tui.screens.merchants import MerchantsScreen
+    from textual.widgets import ContentSwitcher
+
+    store = _seed_store_with_merchants(tmp_path)
+    app = FinabApp(store=store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        switcher = app.query_one("#content-switcher", ContentSwitcher)
+        switcher.current = "screen-merchants"
+        await pilot.pause()
+        ms = app.query_one(MerchantsScreen)
+        # Both panes are present.
+        assert ms.query_one("#merchants-list") is not None
+        assert ms.query_one("#merchants-detail") is not None
+
+
+@pytest.mark.asyncio
+async def test_merchants_detail_shows_unmapped_samples(tmp_path):
+    """Highlighting an unmapped merchant populates the detail card with
+    the FW id, name, and recent transaction samples."""
+    from finab.tui.app import FinabApp
+    from finab.tui.screens.merchants import MerchantsScreen
+    from textual.widgets import ContentSwitcher, Static
+    from datetime import date as date_cls
+
+    from finab.store import ConfigStore
+    store = ConfigStore(tmp_path / "config.json")  # empty store
+    txns = [
+        _FakeFwTxn(merchant_id="fw-merchant-abc", merchant_name="Costco Wholesale", amount=-84210),
+        _FakeFwTxn(merchant_id="fw-merchant-abc", merchant_name="Costco Wholesale", amount=-42500),
+        _FakeFwTxn(merchant_id="fw-merchant-abc", merchant_name="Costco Wholesale", amount=-1899),
+    ]
+    for i, t in enumerate(txns):
+        t.memo = f"COSTCO WHSE #1234 ({i})"
+
+    app = FinabApp(store=store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        switcher = app.query_one("#content-switcher", ContentSwitcher)
+        switcher.current = "screen-merchants"
+        await pilot.pause()
+        ms = app.query_one(MerchantsScreen)
+        ms.bind_data(
+            store=store,
+            fw_transactions=txns,
+            ynab_payees=[],
+            ynab_client=None,
+            budget_id=None,
+        )
+        await pilot.pause()
+        # Move cursor to the unmapped row (which is the only row).
+        ms.set_cursor(0)
+        await pilot.pause()
+        # The detail pane should show the merchant id and sample amounts.
+        from finab.tui.widgets.merchant_card import MerchantCard
+        detail = ms.query_one("#merchants-detail", MerchantCard)
+        text = str(detail.content or "")
+        assert "fw-merchant-abc" in text
+        # One of the sample amounts should appear, formatted to 2 decimals.
+        assert "-84.21" in text or "-84210" in text
+        assert "COSTCO" in text
+
+
+@pytest.mark.asyncio
+async def test_merchants_detail_shows_mapped_summary(tmp_path):
+    """Highlighting a mapped merchant shows its alias and YNAB linkage."""
+    from finab.tui.app import FinabApp
+    from finab.tui.screens.merchants import MerchantsScreen
+    from textual.widgets import ContentSwitcher
+
+    store = _seed_store_with_merchants(tmp_path)  # Costco (mapped) + Self → Savings
+    app = FinabApp(store=store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        switcher = app.query_one("#content-switcher", ContentSwitcher)
+        switcher.current = "screen-merchants"
+        await pilot.pause()
+        ms = app.query_one(MerchantsScreen)
+        ms.bind_data(store=store)
+        await pilot.pause()
+        # Move cursor to row 0 (first mapped merchant since no fw_transactions).
+        ms.set_cursor(0)
+        await pilot.pause()
+        from finab.tui.widgets.merchant_card import MerchantCard
+        detail = ms.query_one("#merchants-detail", MerchantCard)
+        text = str(detail.content or "")
+        # The detail should mention the alias.
+        assert "Costco" in text or "Self" in text

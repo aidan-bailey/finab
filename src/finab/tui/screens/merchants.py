@@ -1,14 +1,16 @@
 """MerchantsScreen — sidebar entry #3.
 
-Lists merchants with state glyph + alias + linked-to. Surfaces
-unmapped merchants derived from fw_transactions and provides an
-action_link flow to map them.
+Master/detail layout. Left pane: scrollable list of mapped + unmapped
+merchants. Right pane: details for the highlighted merchant including
+sample transactions for unmapped ones.
 """
 from typing import Optional
 
 from textual.app import ComposeResult
-from textual.containers import Container
+from textual.containers import Container, Horizontal
 from textual.widgets import Label, ListItem, ListView
+
+from finab.tui.widgets.merchant_card import MerchantCard
 
 
 def _merchant_glyph(m: dict) -> str:
@@ -34,7 +36,9 @@ class MerchantsScreen(Container):
         self._row_map: list = []
 
     def compose(self) -> ComposeResult:
-        yield ListView(id="merchants-list")
+        with Horizontal():
+            yield ListView(id="merchants-list")
+            yield MerchantCard("(no merchant selected)", id="merchants-detail")
 
     def bind_data(
         self,
@@ -62,12 +66,10 @@ class MerchantsScreen(Container):
         # 1. Unmapped merchants — derive from fw_transactions.
         from finab.engine.merchants import _extract_distinct_merchants
         all_distinct = _extract_distinct_merchants(self._fw_transactions)
-        # store.finwise is keyed by fw_id: {"fw-m1": {...}, ...}
-        mapped_fw_ids = {
-            fw_id
-            for m in self._store.merchants()
-            for fw_id in (m.get("finwise") or {})
-        }
+        # Collect all fw_ids across every mapped merchant's finwise dict.
+        mapped_fw_ids = set()
+        for m in self._store.merchants():
+            mapped_fw_ids.update((m.get("finwise") or {}).keys())
         unmapped = [d for d in all_distinct if d["id"] not in mapped_fw_ids]
         for fw_m in unmapped:
             name = fw_m.get("name") or "(no name)"
@@ -86,6 +88,10 @@ class MerchantsScreen(Container):
             lv.append(ListItem(Label(text)))
             self._row_map.append(("mapped", m))
 
+        # After rebuilding the list, refresh the detail pane to match
+        # whatever the cursor is on (or clear it if empty).
+        self._refresh_detail()
+
     def row_count(self) -> int:
         return len(self._row_map)
 
@@ -96,7 +102,9 @@ class MerchantsScreen(Container):
         return False
 
     def set_cursor(self, index: int) -> None:
-        self.query_one("#merchants-list", ListView).index = index
+        lv = self.query_one("#merchants-list", ListView)
+        lv.index = index
+        self._refresh_detail()
 
     def _current_row(self):
         lv = self.query_one("#merchants-list", ListView)
@@ -116,6 +124,23 @@ class MerchantsScreen(Container):
         if row is None or row[0] != "unmapped":
             return None
         return row[1]
+
+    def _refresh_detail(self) -> None:
+        card = self.query_one("#merchants-detail", MerchantCard)
+        row = self._current_row()
+        if row is None:
+            card.set_row(None, None)
+            return
+        kind, payload = row
+        card.set_row(kind, payload)
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        """When the cursor moves in the merchants list, refresh the detail card.
+        Sidebar highlights also fire ListView.Highlighted; filter by source."""
+        lv = self.query_one("#merchants-list", ListView)
+        if event.list_view is not lv:
+            return
+        self._refresh_detail()
 
     def action_rename(self) -> None:
         m = self._current_merchant()

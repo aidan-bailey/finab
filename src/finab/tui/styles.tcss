@@ -164,11 +164,23 @@ AccountsScreen {
 MerchantsScreen {
     width: 1fr;
     height: 1fr;
-    padding: 1 2;
+}
+
+MerchantsScreen Horizontal {
+    width: 1fr;
+    height: 1fr;
 }
 
 #merchants-list {
-    height: 1fr;
+    width: 40;
+    border-right: solid $primary;
+    padding: 0 1;
+    overflow-y: auto;
+}
+
+#merchants-detail {
+    width: 1fr;
+    padding: 1 2;
 }
 
 MemoryScreen {
