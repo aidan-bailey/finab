@@ -338,6 +338,7 @@ async def test_pressing_enter_applies_closest_history(tmp_path):
         pl = app.query_one("#sync-pending", PendingList)
         if pl.index is None:
             pl.index = 0
+        pl.focus()
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()

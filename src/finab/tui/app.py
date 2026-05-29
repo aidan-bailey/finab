@@ -6,7 +6,6 @@ on that data; placeholder screens don't care.
 """
 from textual import work
 from textual.app import App, ComposeResult
-from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.widgets import ContentSwitcher, Footer, Label, ListItem, ListView
 
@@ -44,7 +43,7 @@ class FinabApp(App):
         ("t", "sync_force_transfer", "Force transfer"),
         ("u", "sync_undo", "Undo"),
         ("f", "sync_flush", "Flush"),
-        Binding("enter", "sync_repeat_closest", "Repeat closest", priority=True),
+        ("enter", "sync_repeat_closest", "Repeat closest"),
         ("g", "sync_top", "Top"),
         ("G", "sync_bottom", "Bottom"),
         ("question_mark", "show_help", "Help"),

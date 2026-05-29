@@ -100,6 +100,16 @@ class SyncScreen(Container):
         card = self.query_one("#sync-detail", TransactionCard)
         card.set_candidate(current, alias_of=self._alias_of)
 
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """ListView fires Selected on Enter. For the pending list, treat that
+        as 'repeat closest history entry' — same behavior as the App's `enter`
+        binding triggers, but routed through the message bus so it doesn't
+        clash with modal Input.Submitted handlers."""
+        pl = self.query_one("#sync-pending", PendingList)
+        if event.list_view is not pl:
+            return
+        self.action_repeat_closest()
+
     # ---- action methods (called from FinabApp BINDINGS) ----
 
     def _current_candidate(self):
