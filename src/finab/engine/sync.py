@@ -404,7 +404,7 @@ def _sort_key(store: "ConfigStore"):
 CandidateStatus = Literal["pending", "auto", "decided", "flushed"]
 """
 pending  — needs user input
-auto     — engine auto-applied (inflow/transfer/no-merchant/pre-month)
+auto     — engine auto-applied (inflow/transfer only after this change)
 decided  — user applied a category/split/transfer
 flushed  — pushed to YNAB
 """
@@ -474,12 +474,13 @@ class SyncEngine:
     def _build_candidate(self, txn) -> Candidate:
         """Construct a Candidate around `txn` and apply auto-rules.
 
-        Auto-rules, in priority order — same as _process_one_transaction:
+        Auto-rules (status="auto"), in priority order:
           (a) inflow: positive amount + inflow category exists
           (b) transfer: txn's merchant links to an account's transfer payee
-          (c) no-merchant: no merchant resolvable
-          (d) pre-month: txn dated before first of current month, with merchant
-        Otherwise: status = pending.
+        Blocked paths (status="pending", auto_reason set for UI glyph):
+          (c) no-merchant: no merchant resolvable  → pending/"no-merchant"
+          (d) pre-month: txn dated before first of current month  → pending/"pre-month"
+        Otherwise: status = pending (user must decide).
         """
         # `txn.import_id` is now our durable id (set by merge_and_filter_transactions).
         cid = txn.import_id
@@ -530,21 +531,23 @@ class SyncEngine:
                     "linked. It will push without a transfer payee."
                 )
 
-        # (c) No merchant
+        # (c) No merchant — DON'T auto-push (user must act). status=pending so
+        # flush() skips this, but auto_reason stays set so the UI can render ✗.
         if not merchant:
             txn.category_id = None
             txn.subtransactions = []
-            candidate.status = "auto"
+            candidate.status = "pending"
             candidate.auto_reason = "no-merchant"
             return candidate
 
-        # (d) Before current month
+        # (d) Before current month — same treatment: keep merchant linkage but
+        # don't push without categorization. status=pending so flush() skips.
         if _is_before_current_month(txn):
             txn.payee_id = merchant["ynab"].get("id")
             txn.payee_name = None
             txn.category_id = None
             txn.subtransactions = []
-            candidate.status = "auto"
+            candidate.status = "pending"
             candidate.auto_reason = "pre-month"
             return candidate
 

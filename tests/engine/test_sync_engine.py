@@ -110,13 +110,14 @@ class TestSyncEngineLoad:
         assert c.auto_reason == "inflow"
         assert str(c.txn.category_id) == "cat-rta"
 
-    def test_inflow_with_no_category_falls_through(self, tmp_path):
+    def test_inflow_with_no_category_falls_through_to_pending(self, tmp_path):
         """A positive-amount transaction with NO inflow category in YNAB
         must fall through to the merchant-resolution logic rather than
-        silently auto-mark as inflow with a None category."""
+        silently auto-mark as inflow with a None category.
+        With no merchant, it becomes pending/no-merchant (not auto)."""
         store = _seeded_store(tmp_path)
         tx_store = TransactionsStore(tmp_path / "transactions.json")
-        # Positive amount + no merchant + no inflow category → no-merchant auto.
+        # Positive amount + no merchant + no inflow category → pending/no-merchant.
         txn = _build_txn(
             fw_uuid="fw-pos-1", amount=99999,
             account_id="fw-acc-1", merchant_id=None,
@@ -129,11 +130,11 @@ class TestSyncEngineLoad:
             tx_store=tx_store,
         )
         c = engine.candidates[0]
-        assert c.status == "auto"
+        assert c.status == "pending"
         assert c.auto_reason == "no-merchant"  # fall-through landed here
         assert c.txn.category_id is None
 
-    def test_no_merchant_sets_status_auto(self, tmp_path):
+    def test_no_merchant_sets_status_pending(self, tmp_path):
         store = _seeded_store(tmp_path)
         tx_store = TransactionsStore(tmp_path / "transactions.json")
         txn = _build_txn(fw_uuid="fw-2", amount=-4200, account_id="fw-acc-1", merchant_id=None)
@@ -146,7 +147,7 @@ class TestSyncEngineLoad:
         )
         assert len(engine.candidates) == 1
         c = engine.candidates[0]
-        assert c.status == "auto"
+        assert c.status == "pending"
         assert c.auto_reason == "no-merchant"
 
     def test_transfer_sets_status_auto(self, tmp_path):
@@ -199,9 +200,9 @@ class TestSyncEngineLoad:
         )
         assert engine.candidates == []
 
-    def test_pre_current_month_sets_status_auto(self, tmp_path):
+    def test_pre_current_month_sets_status_pending(self, tmp_path):
         """A txn dated before the first of the current month, with a
-        known merchant, should auto-resolve with reason='pre-month'."""
+        known merchant, becomes pending (not auto) so flush() skips it."""
         store = _seeded_store(tmp_path)
         store.add_merchant(
             alias="OldShop",
@@ -224,7 +225,7 @@ class TestSyncEngineLoad:
         )
         assert len(engine.candidates) == 1
         c = engine.candidates[0]
-        assert c.status == "auto"
+        assert c.status == "pending"
         assert c.auto_reason == "pre-month"
 
     def test_unresolved_txn_stays_pending(self, tmp_path):
@@ -474,13 +475,15 @@ class TestUndo:
         assert merchant["categories_used"].get("cat-groc") == 1
 
     def test_undo_raises_on_auto_candidate(self, tmp_path):
+        """undo() raises on any non-decided candidate, including auto (inflow)."""
         store = _seeded_store(tmp_path)
         tx_store = TransactionsStore(tmp_path / "transactions.json")
-        txn = _build_txn(fw_uuid="fw-9", amount=-100, account_id="fw-acc-1", merchant_id=None)
+        # Use a positive-amount txn with an inflow category to get a true auto candidate.
+        txn = _build_txn(fw_uuid="fw-9", amount=100, account_id="fw-acc-1", merchant_id=None)
         engine = SyncEngine(
             fw_transactions=[txn],
             ynab_transactions=[],
-            ynab_categories=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
             store=store,
             tx_store=tx_store,
         )
@@ -698,3 +701,79 @@ class TestApplyHistory:
         engine.undo(c.id)
         assert c.status == "pending"
         assert c.txn.category_id is None
+
+
+class TestNoMerchantAndPreMonthAreBlocked:
+    """The user explicitly disabled auto-pushing of no-merchant and pre-month
+    candidates so they don't surprise YNAB. These paths should set
+    status='pending' so flush() skips them."""
+
+    def test_no_merchant_is_pending_not_auto(self, tmp_path):
+        store = _seeded_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        txn = _build_txn(fw_uuid="fw-nm", amount=-1000, account_id="fw-acc-1", merchant_id=None)
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        c = engine.candidates[0]
+        assert c.status == "pending"
+        assert c.auto_reason == "no-merchant"  # reason still populated for UI glyph
+
+    def test_pre_month_is_pending_not_auto(self, tmp_path):
+        from datetime import date as date_cls
+        store = _seeded_store(tmp_path)
+        store.add_merchant(
+            alias="OldShop",
+            fw_record={"id": "fw-merchant-1", "name": "OldShop", "samples": []},
+            ynab_record={"id": "yn-pay-1", "name": "OldShop", "transfer_account_id": None},
+        )
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        txn = _build_txn(
+            fw_uuid="fw-old", amount=-500,
+            account_id="fw-acc-1", merchant_id="fw-merchant-1",
+            date_str="2000-01-01",
+        )
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+        c = engine.candidates[0]
+        assert c.status == "pending"
+        assert c.auto_reason == "pre-month"
+
+    def test_flush_skips_no_merchant_pending(self, tmp_path):
+        """The whole point of the change: no-merchant candidates don't reach flush."""
+        store = _seeded_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        txn = _build_txn(fw_uuid="fw-nm-flush", amount=-2000, account_id="fw-acc-1", merchant_id=None)
+        engine = SyncEngine(
+            fw_transactions=[txn],
+            ynab_transactions=[],
+            ynab_categories=[],
+            store=store,
+            tx_store=tx_store,
+        )
+
+        class _FakeYnabClient:
+            def __init__(self):
+                self.created = []
+                self.updated = []
+            def create_transactions(self, budget_id, txns):
+                self.created.append(list(txns))
+            def update_transactions(self, budget_id, txns):
+                self.updated.append(list(txns))
+
+        client = _FakeYnabClient()
+        engine.flush(client, budget_id="bid")
+        # Nothing should have been pushed.
+        assert client.created == []
+        assert client.updated == []
+        # Candidate is still pending after flush (not flushed).
+        assert engine.candidates[0].status == "pending"

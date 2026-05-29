@@ -107,10 +107,10 @@ async def test_sync_screen_builds_engine_from_loaded_data(tmp_path):
         sync_screen.bind_data(loaded=pre_loaded, store=store, tx_store=tx_store)
         await pilot.pause()
         # One candidate should be present. With no merchant linked, the
-        # auto-rule resolves it as 'no-merchant'.
+        # engine marks it pending/no-merchant (not auto — user must act).
         pl = app.query_one("#sync-pending", PendingList)
         assert len(pl.candidates) == 1
-        assert pl.candidates[0].status == "auto"
+        assert pl.candidates[0].status == "pending"
         assert pl.candidates[0].auto_reason == "no-merchant"
 
 

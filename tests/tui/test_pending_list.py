@@ -73,3 +73,44 @@ async def test_pending_list_warning_glyph():
         pl = app.query_one("#pl", PendingList)
         rows = pl.row_glyphs_and_text()
         assert rows[0][0] == "⚠"  # warning glyph wins over status
+
+
+@pytest.mark.asyncio
+async def test_pending_no_merchant_uses_x_glyph():
+    """A pending candidate with auto_reason='no-merchant' shows ✗
+    (distinguishes it from regular pending ○ in the list)."""
+    from textual.app import App
+    from finab.tui.widgets.pending_list import PendingList
+
+    candidates = [_make_candidate(alias="X", amount=-100, status="pending", auto_reason="no-merchant")]
+
+    class _Host(App):
+        def compose(self):
+            yield PendingList(candidates=candidates, alias_of=lambda c: c.txn._alias, id="pl")
+
+    app = _Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        pl = app.query_one("#pl", PendingList)
+        rows = pl.row_glyphs_and_text()
+        assert rows[0][0] == "✗"
+
+
+@pytest.mark.asyncio
+async def test_pending_pre_month_uses_arrow_glyph():
+    """A pending candidate with auto_reason='pre-month' shows ↷."""
+    from textual.app import App
+    from finab.tui.widgets.pending_list import PendingList
+
+    candidates = [_make_candidate(alias="Y", amount=-200, status="pending", auto_reason="pre-month")]
+
+    class _Host(App):
+        def compose(self):
+            yield PendingList(candidates=candidates, alias_of=lambda c: c.txn._alias, id="pl")
+
+    app = _Host()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        pl = app.query_one("#pl", PendingList)
+        rows = pl.row_glyphs_and_text()
+        assert rows[0][0] == "↷"

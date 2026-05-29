@@ -14,9 +14,14 @@ from finab.engine.sync import Candidate
 # Status glyph mapping. Matches the spec.
 _GLYPHS = {
     ("pending", None): "○",
+    ("pending", "no-merchant"): "✗",
+    ("pending", "pre-month"): "↷",
     ("decided", None): "✓",
     ("auto", "inflow"): "+",
     ("auto", "transfer"): "→",
+    # ("auto", "no-merchant") and ("auto", "pre-month") are no longer produced
+    # by the engine, but leaving them in the map is harmless and helps if a
+    # future change re-enables them.
     ("auto", "no-merchant"): "✗",
     ("auto", "pre-month"): "↷",
     ("flushed", None): "⇡",
