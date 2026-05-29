@@ -39,7 +39,7 @@ class SyncScreen(Container):
                 alias_of=_placeholder_alias_of,
                 id="sync-pending",
             )
-            yield TransactionCard("(select a transaction)", id="sync-detail")
+            yield TransactionCard(id="sync-detail")
 
     def set_candidates(
         self,

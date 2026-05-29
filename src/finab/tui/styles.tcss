@@ -1,30 +1,92 @@
+/* --- Foundation --- */
+
 Screen {
-    layout: horizontal;
+    layout: vertical;
+    background: $background;
+    color: $foreground;
+}
+
+/* --- Header --- */
+
+FinabHeader {
+    height: 1;
+    background: $panel;
+    padding: 0 2;
+}
+
+#header-wordmark {
+    width: 12;
+    color: $accent;
+    text-style: bold;
+}
+
+#header-stats {
+    width: 1fr;
+    text-align: center;
+    color: $text-muted;
+    text-style: italic;
+}
+
+#header-date {
+    width: 12;
+    text-align: right;
+    color: $text-muted;
+}
+
+/* --- Error Banner --- */
+
+ErrorBanner {
+    background: $error 30%;
+    color: $foreground;
+    padding: 0 2;
+    height: auto;
+    display: none;
+}
+
+ErrorBanner.has-error {
+    display: block;
+}
+
+/* --- Body layout: sidebar + content --- */
+
+Horizontal {
+    width: 1fr;
+    height: 1fr;
 }
 
 #sidebar {
-    width: 18;
-    border-right: thick $primary;
-    background: $surface;
+    width: 22;
+    background: $panel;
+    border-right: solid $primary 30%;
+    padding: 1 0;
 }
 
 #sidebar > ListItem {
-    padding: 0 1;
+    padding: 0 2;
+    height: 1;
+}
+
+#sidebar > ListItem > Label {
+    color: $foreground;
+    text-style: bold;
 }
 
 #sidebar > ListItem.--highlight {
-    background: $primary;
-    color: $background;
+    background: $surface;
+    border-left: thick $accent;
+    padding-left: 1;
+}
+
+#sidebar > ListItem.--highlight > Label {
+    color: $accent;
 }
 
 #content-switcher {
     width: 1fr;
+    background: $background;
 }
 
-.placeholder-body {
-    padding: 2 4;
-    color: $text-muted;
-}
+/* --- Sync screen --- */
 
 SyncScreen {
     layout: horizontal;
@@ -38,16 +100,187 @@ SyncScreen Horizontal {
 }
 
 #sync-pending {
-    width: 32;
-    border-right: solid $primary;
-    padding: 0 1;
+    width: 38;
+    border-right: solid $primary 30%;
+    padding: 1 1;
     overflow-y: auto;
+}
+
+#sync-pending > ListItem {
+    padding: 0 0;
+    height: 1;
+}
+
+#sync-pending > ListItem.--highlight {
+    background: $surface;
 }
 
 #sync-detail {
     width: 1fr;
+    padding: 2 3;
+}
+
+/* --- Pending list glyph colors (applied via Label class) --- */
+
+Label.glyph-pending { color: $text-muted; }
+Label.glyph-decided { color: $success; }
+Label.glyph-auto-inflow { color: $success; }
+Label.glyph-auto-transfer { color: $secondary; }
+Label.glyph-warning { color: $warning; }
+Label.glyph-flushed { color: $text-muted; }
+Label.glyph-no-merchant { color: $error; }
+Label.glyph-pre-month { color: $text-muted; }
+
+/* --- TransactionCard editorial layout --- */
+
+TransactionCard {
+    layout: vertical;
+    height: auto;
+}
+
+TransactionCard.empty #card-amount,
+TransactionCard.empty #card-merchant,
+TransactionCard.empty #card-status,
+TransactionCard.empty #card-meta,
+TransactionCard.empty #card-warnings {
+    display: none;
+}
+
+TransactionCard #card-empty {
+    display: none;
+}
+
+TransactionCard.empty #card-empty {
+    display: block;
+    color: $text-muted;
+    padding: 2 0;
+}
+
+#card-amount {
+    text-style: bold;
+    padding-bottom: 1;
+}
+
+#card-amount.negative {
+    color: $accent;
+}
+
+#card-amount.positive {
+    color: $success;
+}
+
+#card-merchant {
+    color: $foreground;
+    text-style: bold;
+    padding-bottom: 1;
+}
+
+#card-status {
+    text-style: bold;
+    padding-bottom: 1;
+}
+
+#card-status.status-pending { color: $text-muted; }
+#card-status.status-decided { color: $success; }
+#card-status.status-auto { color: $secondary; }
+#card-status.status-flushed { color: $text-muted; }
+#card-status.status-warning { color: $warning; }
+
+#card-meta {
+    color: $text-muted;
+}
+
+#card-warnings {
+    color: $warning;
+    padding-top: 1;
+}
+
+/* --- Other screens --- */
+
+AccountsScreen {
+    width: 1fr;
+    height: 1fr;
     padding: 1 2;
 }
+
+MemoryScreen {
+    width: 1fr;
+    height: 1fr;
+    padding: 1 2;
+}
+
+SettingsScreen {
+    width: 1fr;
+    height: 1fr;
+    padding: 1 2;
+}
+
+MerchantsScreen {
+    width: 1fr;
+    height: 1fr;
+}
+
+MerchantsScreen Horizontal {
+    width: 1fr;
+    height: 1fr;
+}
+
+#accounts-list,
+#memory-list {
+    height: 1fr;
+    background: $background;
+}
+
+#accounts-list > ListItem,
+#memory-list > ListItem {
+    height: 1;
+    padding: 0 1;
+}
+
+#accounts-list > ListItem.--highlight,
+#memory-list > ListItem.--highlight {
+    background: $surface;
+}
+
+#merchants-list {
+    width: 40;
+    border-right: solid $primary 30%;
+    padding: 0 1;
+    overflow-y: auto;
+    background: $background;
+}
+
+#merchants-list > ListItem {
+    height: 1;
+    padding: 0 1;
+}
+
+#merchants-list > ListItem.--highlight {
+    background: $surface;
+}
+
+#merchants-detail {
+    width: 1fr;
+    padding: 1 2;
+    border-left: solid $primary 30%;
+}
+
+SettingsScreen Static {
+    padding: 1 0;
+}
+
+#settings-title {
+    text-style: bold;
+    color: $accent;
+    padding-bottom: 1;
+}
+
+.placeholder-body {
+    padding: 2 4;
+    color: $text-muted;
+}
+
+/* --- Modals — semantic border colors --- */
 
 CategoryPickerModal {
     align: center middle;
@@ -56,13 +289,14 @@ CategoryPickerModal {
 #picker-dialog {
     width: 70%;
     height: 80%;
-    border: thick $primary;
+    border: thick $accent;
     padding: 1 2;
     background: $surface;
 }
 
 #picker-title {
     text-style: bold;
+    color: $accent;
     padding-bottom: 1;
 }
 
@@ -73,13 +307,14 @@ SplitEditorModal {
 #split-dialog {
     width: 80%;
     height: 80%;
-    border: thick $primary;
+    border: thick $warning;
     padding: 1 2;
     background: $surface;
 }
 
 #split-title {
     text-style: bold;
+    color: $warning;
     padding-bottom: 1;
 }
 
@@ -94,13 +329,14 @@ HistoryPickerModal {
 #history-dialog {
     width: 70%;
     height: 60%;
-    border: thick $primary;
+    border: thick $secondary;
     padding: 1 2;
     background: $surface;
 }
 
 #history-title {
     text-style: bold;
+    color: $secondary;
     padding-bottom: 1;
 }
 
@@ -111,7 +347,7 @@ FlushConfirmModal {
 #flush-confirm-dialog {
     width: 60;
     height: auto;
-    border: thick $warning;
+    border: thick $error;
     padding: 1 2;
     background: $surface;
 }
@@ -119,6 +355,7 @@ FlushConfirmModal {
 #flush-confirm-message {
     padding-bottom: 1;
     text-style: bold;
+    color: $error;
 }
 
 HelpOverlay {
@@ -129,7 +366,7 @@ HelpOverlay {
     width: 70%;
     height: auto;
     max-height: 90%;
-    border: thick $accent;
+    border: thick #8a7e6e;
     padding: 1 2;
     background: $surface;
 }
@@ -141,70 +378,15 @@ AccountLinkPicker {
 #account-picker-dialog {
     width: 60%;
     height: 60%;
-    border: thick $primary;
+    border: thick $accent;
     padding: 1 2;
     background: $surface;
 }
 
 #account-picker-title {
     text-style: bold;
+    color: $accent;
     padding-bottom: 1;
-}
-
-AccountsScreen {
-    width: 1fr;
-    height: 1fr;
-    padding: 1 2;
-}
-
-#accounts-list {
-    height: 1fr;
-}
-
-MerchantsScreen {
-    width: 1fr;
-    height: 1fr;
-}
-
-MerchantsScreen Horizontal {
-    width: 1fr;
-    height: 1fr;
-}
-
-#merchants-list {
-    width: 40;
-    border-right: solid $primary;
-    padding: 0 1;
-    overflow-y: auto;
-}
-
-#merchants-detail {
-    width: 1fr;
-    padding: 1 2;
-}
-
-MemoryScreen {
-    width: 1fr;
-    height: 1fr;
-    padding: 1 2;
-}
-
-#memory-list {
-    height: 1fr;
-}
-
-SettingsScreen {
-    width: 1fr;
-    height: 1fr;
-    padding: 1 2;
-}
-
-SettingsScreen Static {
-    padding: 1 0;
-}
-
-#settings-title {
-    text-style: bold;
 }
 
 YnabAccountPicker {
@@ -214,13 +396,14 @@ YnabAccountPicker {
 #ynab-account-picker-dialog {
     width: 60%;
     height: 60%;
-    border: thick $primary;
+    border: thick $accent;
     padding: 1 2;
     background: $surface;
 }
 
 #ynab-account-picker-title {
     text-style: bold;
+    color: $accent;
     padding-bottom: 1;
 }
 
@@ -231,14 +414,33 @@ YnabPayeePicker {
 #ynab-payee-picker-dialog {
     width: 60%;
     height: 60%;
-    border: thick $primary;
+    border: thick $accent;
     padding: 1 2;
     background: $surface;
 }
 
 #ynab-payee-picker-title {
     text-style: bold;
+    color: $accent;
     padding-bottom: 1;
+}
+
+AliasInputModal {
+    align: center middle;
+}
+
+#alias-input-dialog {
+    width: 50;
+    height: auto;
+    border: thick $accent;
+    padding: 1 2;
+    background: $surface;
+}
+
+#alias-input-prompt {
+    padding-bottom: 1;
+    color: $accent;
+    text-style: bold;
 }
 
 YesNoModal {
@@ -248,7 +450,7 @@ YesNoModal {
 #yes-no-dialog {
     width: 60;
     height: auto;
-    border: thick $primary;
+    border: thick $warning;
     padding: 1 2;
     background: $surface;
 }
@@ -256,8 +458,27 @@ YesNoModal {
 #yes-no-message {
     padding-bottom: 1;
     text-style: bold;
+    color: $warning;
 }
 
 #yes-no-hints {
     color: $text-muted;
+}
+
+/* --- Footer --- */
+
+Footer {
+    background: $panel;
+    color: $foreground;
+    height: 1;
+}
+
+FooterKey {
+    background: $panel;
+    color: $accent;
+    text-style: bold;
+}
+
+FooterKey > .footer-key--description {
+    color: $foreground;
 }

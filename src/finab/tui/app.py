@@ -8,6 +8,7 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.reactive import reactive
+from textual.theme import Theme
 from textual.widgets import ContentSwitcher, Footer, Label, ListItem, ListView
 
 from finab.tui.data_loader import LoadedData, load_all
@@ -18,6 +19,27 @@ from finab.tui.screens.placeholder import PlaceholderScreen
 from finab.tui.screens.settings import SettingsScreen
 from finab.tui.screens.sync import SyncScreen
 from finab.tui.widgets.error_banner import ErrorBanner
+from finab.tui.widgets.finab_header import FinabHeader
+
+
+FINAB_THEME = Theme(
+    name="finab-editorial",
+    primary="#c9591c",      # terracotta
+    secondary="#1a5e63",    # deep teal
+    accent="#c9591c",       # use primary as the visible accent
+    foreground="#e8e3d5",   # cream
+    background="#1a1612",   # warm charcoal
+    success="#7a8a3a",      # muted olive
+    warning="#c9a14b",      # amber
+    error="#9a3a3a",        # rust red
+    surface="#2a221d",
+    panel="#221c17",
+    boost="#3a2e26",
+    dark=True,
+    variables={
+        "text-muted": "#8a7e6e",
+    },
+)
 
 
 
@@ -72,6 +94,7 @@ class FinabApp(App):
         self.loaded: LoadedData | None = None
 
     def compose(self) -> ComposeResult:
+        yield FinabHeader(id="finab-header")
         yield ErrorBanner(id="error-banner")
         with Horizontal():
             yield ListView(
@@ -90,6 +113,10 @@ class FinabApp(App):
         """After the layout is mounted, kick off the data fetch — but
         only if clients were provided. Tests that don't provide clients
         get a TUI shell with no data, which is fine."""
+        # Register and activate the Editorial Terminal theme.
+        self.register_theme(FINAB_THEME)
+        self.theme = "finab-editorial"
+
         # Settings screen renders from local state — bind immediately.
         try:
             settings = self.query_one(SettingsScreen)
@@ -106,6 +133,27 @@ class FinabApp(App):
                 self.query_one(MemoryScreen).bind_data(store=self._store)
             except Exception:
                 pass
+
+    def _refresh_header_stats(self) -> None:
+        """Read pending/decided/flushed counts from the SyncEngine (if loaded)
+        and push them into the header."""
+        try:
+            header = self.query_one("#finab-header", FinabHeader)
+        except Exception:
+            return
+        try:
+            sync_screen = self.query_one(SyncScreen)
+        except Exception:
+            header.refresh_stats(0, 0, 0)
+            return
+        engine = getattr(sync_screen, "_engine", None)
+        if engine is None:
+            header.refresh_stats(0, 0, 0)
+            return
+        pending = sum(1 for c in engine.candidates if c.status == "pending")
+        decided = sum(1 for c in engine.candidates if c.status in ("decided", "auto"))
+        flushed = sum(1 for c in engine.candidates if c.status == "flushed")
+        header.refresh_stats(pending, decided, flushed)
 
     def _render_error_banner(self) -> None:
         """Update the error banner from self.loaded.error (if any)."""
@@ -152,6 +200,7 @@ class FinabApp(App):
             )
             memory_screen = self.query_one(MemoryScreen)
             memory_screen.bind_data(store=self._store)
+        self._refresh_header_stats()
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.item is None:

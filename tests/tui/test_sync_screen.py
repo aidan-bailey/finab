@@ -18,14 +18,16 @@ async def test_sync_screen_has_two_panes():
 @pytest.mark.asyncio
 async def test_transaction_card_shows_empty_state():
     """No candidates → card shows empty-state text."""
+    from textual.widgets import Static
     from finab.tui.app import FinabApp
     app = FinabApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         card = app.query_one("#sync-detail")
-        # When no candidate is selected, card content is empty-state.
-        # Textual 8.x: read via .content; fallback to .renderable.
-        text = str(getattr(card, "content", None) or getattr(card, "renderable", ""))
+        # Card is now a Container; read text from inner Statics.
+        text = ""
+        for s in card.query(Static):
+            text += str(getattr(s, "content", "") or getattr(s, "renderable", ""))
         assert "select a transaction" in text.lower() or "no transaction" in text.lower()
 
 
@@ -33,6 +35,7 @@ async def test_transaction_card_shows_empty_state():
 async def test_transaction_card_renders_candidate():
     """Card renders the candidate's fields after one is selected."""
     from datetime import date as _date
+    from textual.widgets import Static
     from finab.engine.sync import Candidate
     from finab.tui.app import FinabApp
 
@@ -53,10 +56,17 @@ async def test_transaction_card_renders_candidate():
         )
         await pilot.pause()
         card = app.query_one("#sync-detail")
-        card_text = str(getattr(card, "content", None) or getattr(card, "renderable", ""))
-        assert "Costco" in card_text
+        # Card is now a Container — aggregate text from inner Statics.
+        card_text = ""
+        for s in card.query(Static):
+            card_text += str(getattr(s, "content", "") or getattr(s, "renderable", ""))
+        # Merchant alias is now uppercased.
+        assert "COSTCO" in card_text
+        # Amount appears without "Amount:" label.
         assert "-84.21" in card_text
+        # Date appears in meta line.
         assert "2026-05-22" in card_text
+        # Memo still appears.
         assert "COSTCO WHSE" in card_text
 
 

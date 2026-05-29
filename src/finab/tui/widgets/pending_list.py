@@ -3,9 +3,14 @@
 This is a thin wrapper over Textual's ListView. Each ListItem renders
 "GLYPH  ALIAS  AMOUNT" with glyph chosen by the candidate's status and
 auto_reason. The cursor (which row is highlighted) is owned by ListView.
+
+Each row splits glyph and text into two Labels so the glyph can carry
+a per-status CSS class for color theming without affecting the rest of
+the row text.
 """
 from typing import Callable, Iterable, Optional
 
+from textual.containers import Horizontal
 from textual.widgets import Label, ListItem, ListView
 
 from finab.engine.sync import Candidate
@@ -27,6 +32,18 @@ _GLYPHS = {
     ("flushed", None): "⇡",
 }
 
+_GLYPH_CSS_CLASS = {
+    ("pending", None): "glyph-pending",
+    ("pending", "no-merchant"): "glyph-no-merchant",
+    ("pending", "pre-month"): "glyph-pre-month",
+    ("decided", None): "glyph-decided",
+    ("auto", "inflow"): "glyph-auto-inflow",
+    ("auto", "transfer"): "glyph-auto-transfer",
+    ("auto", "no-merchant"): "glyph-no-merchant",
+    ("auto", "pre-month"): "glyph-pre-month",
+    ("flushed", None): "glyph-flushed",
+}
+
 
 def _glyph_for(candidate: Candidate) -> str:
     """Pick the row glyph from candidate.status + candidate.auto_reason.
@@ -38,6 +55,16 @@ def _glyph_for(candidate: Candidate) -> str:
     if key_specific in _GLYPHS:
         return _GLYPHS[key_specific]
     return _GLYPHS.get((candidate.status, None), "?")
+
+
+def _glyph_class_for(candidate: Candidate) -> str:
+    """Pick the CSS class for the glyph label based on status."""
+    if candidate.warnings:
+        return "glyph-warning"
+    key = (candidate.status, candidate.auto_reason)
+    if key in _GLYPH_CSS_CLASS:
+        return _GLYPH_CSS_CLASS[key]
+    return _GLYPH_CSS_CLASS.get((candidate.status, None), "glyph-pending")
 
 
 def _amount_str(amount_milliunits: int) -> str:
@@ -69,8 +96,11 @@ class PendingList(ListView):
         glyph = _glyph_for(candidate)
         alias = self._alias_of(candidate) or "(no merchant)"
         amount = _amount_str(candidate.txn.amount)
-        text = f"{glyph}  {alias:<18.18}  {amount:>10}"
-        return ListItem(Label(text), id=f"row-{candidate.id}")
+        rest = f"  {alias:<18.18}  {amount:>10}"
+        glyph_class = _glyph_class_for(candidate)
+        glyph_label = Label(glyph, classes=glyph_class)
+        rest_label = Label(rest)
+        return ListItem(Horizontal(glyph_label, rest_label), id=f"row-{candidate.id}")
 
     @property
     def candidates(self) -> list[Candidate]:
@@ -89,32 +119,38 @@ class PendingList(ListView):
 
         Rather than removing and re-mounting the ListItem (which races
         with Textual's deferred DOM mutations), we locate the existing
-        row's Label and update its content in-place. This avoids any
+        row's Labels and update their content in-place. This avoids any
         duplicate-ID issue while keeping the row's position stable."""
-        try:
-            candidate = next(c for c in self._candidates if c.id == candidate_id)
-        except StopIteration:
-            return
-        glyph = _glyph_for(candidate)
-        alias = self._alias_of(candidate) or "(no merchant)"
-        amount = _amount_str(candidate.txn.amount)
-        new_text = f"{glyph}  {alias:<18.18}  {amount:>10}"
-        try:
-            row_item = self.query_one(f"#row-{candidate_id}")
-            label = row_item.query_one(Label)
-            label.update(new_text)
-        except Exception:
-            pass
+        for i, c in enumerate(self._candidates):
+            if c.id == candidate_id:
+                items = list(self.children)
+                if i < len(items):
+                    labels = list(items[i].query(Label))
+                    if len(labels) >= 2:
+                        glyph = _glyph_for(c)
+                        alias = self._alias_of(c) or "(no merchant)"
+                        amount = _amount_str(c.txn.amount)
+                        rest = f"  {alias:<18.18}  {amount:>10}"
+                        labels[0].update(glyph)
+                        # Clear and re-apply the glyph CSS class.
+                        for cls in list(labels[0].classes):
+                            labels[0].remove_class(cls)
+                        labels[0].add_class(_glyph_class_for(c))
+                        labels[1].update(rest)
+                return
 
     # ---- test helpers ----
     def row_glyphs_and_text(self) -> list[tuple[str, str]]:
         """Return [(glyph, full_text), ...] for testing."""
         result = []
         for item in self.children:
-            label = item.query_one(Label)
-            # Textual 8.x: Label.content (Static.content equivalent). Fall back to
-            # renderable if content doesn't yield a usable string.
-            text = str(getattr(label, "content", None) or getattr(label, "renderable", ""))
-            glyph = text.split()[0] if text else ""
-            result.append((glyph, text))
+            labels = list(item.query(Label))
+            if len(labels) >= 2:
+                glyph = str(getattr(labels[0], "content", "") or getattr(labels[0], "renderable", ""))
+                text = str(getattr(labels[1], "content", "") or getattr(labels[1], "renderable", ""))
+                result.append((glyph.strip(), glyph + text))
+            elif labels:
+                text = str(getattr(labels[0], "content", "") or getattr(labels[0], "renderable", ""))
+                glyph_str = text.split()[0] if text else ""
+                result.append((glyph_str, text))
         return result
