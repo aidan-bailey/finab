@@ -1,6 +1,8 @@
 """AccountsScreen — sidebar entry #2.
 
 Lists store-mapped accounts with state glyph + alias + linked YNAB record.
+Unmapped FW accounts (present in the live fetch but not yet in the store)
+appear at the top with a `!` glyph.
 
 Actions:
   a — rename alias (AliasInputModal)
@@ -34,19 +36,57 @@ class AccountsScreen(Container):
     def __init__(self, *, id: Optional[str] = None):
         super().__init__(id=id)
         self._store = None
+        self._fw_accounts: list = []
+        self._ynab_accounts: list = []
+        self._ynab_client = None
+        self._budget_id: Optional[str] = None
+        # Row index → (kind, payload). kind in {"mapped", "unmapped"}.
+        # payload: for "mapped", the store account dict; for "unmapped",
+        # the FW account object.
+        self._row_map: list = []
 
     def compose(self) -> ComposeResult:
         yield ListView(id="accounts-list")
 
-    def bind_data(self, *, store) -> None:
+    def bind_data(
+        self,
+        *,
+        store,
+        fw_accounts: list = None,
+        ynab_accounts: list = None,
+        ynab_client=None,
+        budget_id: Optional[str] = None,
+    ) -> None:
         self._store = store
+        self._fw_accounts = list(fw_accounts) if fw_accounts is not None else []
+        self._ynab_accounts = list(ynab_accounts) if ynab_accounts is not None else []
+        self._ynab_client = ynab_client
+        self._budget_id = budget_id
         self.refresh_rows()
 
     def refresh_rows(self) -> None:
         lv = self.query_one("#accounts-list", ListView)
         lv.clear()
+        self._row_map = []
         if self._store is None:
             return
+
+        # 1. Unmapped FW accounts — any fw_account whose finwise_id isn't
+        # in the store yet.
+        mapped_fw_ids = {
+            (a.get("finwise") or {}).get("id")
+            for a in self._store.accounts()
+        }
+        unmapped = [
+            fw for fw in self._fw_accounts
+            if getattr(fw, "finwise_id", None) and fw.finwise_id not in mapped_fw_ids
+        ]
+        for fw in unmapped:
+            text = f"!  {fw.name:<22.22}  →  (unlinked — press `l` to map)"
+            lv.append(ListItem(Label(text)))
+            self._row_map.append(("unmapped", fw))
+
+        # 2. Mapped store accounts.
         for acc in self._store.accounts():
             glyph = _state_glyph(acc)
             alias = acc.get("alias", "?")
@@ -56,21 +96,45 @@ class AccountsScreen(Container):
             tag = " (tracking)" if yn_type in _TRACKING_TYPES else ""
             text = f"{glyph}  {alias:<22.22}  →  {yn_name:<22.22}  {yn_type}{tag}"
             lv.append(ListItem(Label(text)))
+            self._row_map.append(("mapped", acc))
 
     def row_count(self) -> int:
-        return len(list(self._store.accounts())) if self._store else 0
+        return len(self._row_map)
+
+    def has_unmapped_for(self, finwise_id: str) -> bool:
+        """Test helper: did the unmapped row for this FW id render?"""
+        for kind, payload in self._row_map:
+            if kind == "unmapped" and getattr(payload, "finwise_id", None) == finwise_id:
+                return True
+        return False
 
     def set_cursor(self, index: int) -> None:
         self.query_one("#accounts-list", ListView).index = index
 
     def _current_account(self) -> Optional[dict]:
+        """The store account at the cursor, or None if the row is unmapped
+        or there's no cursor. Used by action_rename / action_toggle_ignore
+        which only operate on mapped rows."""
         lv = self.query_one("#accounts-list", ListView)
         idx = lv.index
-        if idx is None or self._store is None:
+        if idx is None or not (0 <= idx < len(self._row_map)):
             return None
-        accounts = list(self._store.accounts())
-        if 0 <= idx < len(accounts):
-            return accounts[idx]
+        kind, payload = self._row_map[idx]
+        if kind == "mapped":
+            return payload
+        return None
+
+    def _current_unmapped_fw(self):
+        """Return the FW account stub at the current cursor, or None if
+        the row is mapped (or there's no cursor). Used by Task 5's
+        action_link."""
+        lv = self.query_one("#accounts-list", ListView)
+        idx = lv.index
+        if idx is None or not (0 <= idx < len(self._row_map)):
+            return None
+        kind, payload = self._row_map[idx]
+        if kind == "unmapped":
+            return payload
         return None
 
     def action_toggle_ignore(self) -> None:

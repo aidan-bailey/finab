@@ -60,3 +60,41 @@ async def test_accounts_screen_toggle_ignore(tmp_path):
         await pilot.pause()
         acc = store.account_by_finwise_id("fw-a")
         assert acc["ignore_transactions"] is True
+
+
+class _FakeFwAccount:
+    """Stub matching the FinWise-side Account model fields the screen reads."""
+    def __init__(self, finwise_id, name, type="checking"):
+        self.finwise_id = finwise_id
+        self.name = name
+        self.type = type
+        self.balance = 0
+        self.currency_code = "USD"
+
+
+@pytest.mark.asyncio
+async def test_accounts_screen_shows_unmapped_fw_accounts(tmp_path):
+    """When `fw_accounts` contains accounts not in the store, they
+    render as unmapped rows with the `!` glyph."""
+    from finab.tui.app import FinabApp
+    from finab.tui.screens.accounts import AccountsScreen
+    from textual.widgets import ContentSwitcher
+
+    store = _seed_store(tmp_path)  # has fw-a (Chase) and fw-b (Crypto)
+    fw_accounts = [
+        _FakeFwAccount("fw-a", "Chase"),         # already in store
+        _FakeFwAccount("fw-c", "BoA Card"),       # NEW — unmapped
+    ]
+    app = FinabApp(store=store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        switcher = app.query_one("#content-switcher", ContentSwitcher)
+        switcher.current = "screen-accounts"
+        await pilot.pause()
+        ac = app.query_one(AccountsScreen)
+        ac.bind_data(store=store, fw_accounts=fw_accounts, ynab_accounts=[], ynab_client=None, budget_id=None)
+        await pilot.pause()
+        # 2 mapped + 1 unmapped = 3 rows.
+        assert ac.row_count() == 3
+        # The unmapped row uses '!' glyph.
+        assert ac.has_unmapped_for("fw-c")

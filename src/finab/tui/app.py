@@ -129,7 +129,13 @@ class FinabApp(App):
                 tx_store=self._tx_store,
             )
             accounts_screen = self.query_one(AccountsScreen)
-            accounts_screen.bind_data(store=self._store)
+            accounts_screen.bind_data(
+                store=self._store,
+                fw_accounts=self.loaded.fw_accounts,
+                ynab_accounts=self.loaded.ynab_accounts,
+                ynab_client=self._ynab_client,
+                budget_id=self._budget_id,
+            )
             merchants_screen = self.query_one(MerchantsScreen)
             merchants_screen.bind_data(store=self._store)
             memory_screen = self.query_one(MemoryScreen)
