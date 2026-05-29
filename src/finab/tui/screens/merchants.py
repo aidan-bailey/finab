@@ -1,6 +1,8 @@
 """MerchantsScreen — sidebar entry #3.
 
-Lists merchants with state glyph + alias + linked-to.
+Lists merchants with state glyph + alias + linked-to. Surfaces
+unmapped merchants derived from fw_transactions and provides an
+action_link flow to map them.
 """
 from typing import Optional
 
@@ -24,22 +26,56 @@ class MerchantsScreen(Container):
     def __init__(self, *, id: Optional[str] = None):
         super().__init__(id=id)
         self._store = None
+        self._fw_transactions: list = []
+        self._ynab_payees: list = []
+        self._ynab_client = None
+        self._budget_id: Optional[str] = None
+        # Row index → (kind, payload). kind in {"mapped", "unmapped"}.
+        self._row_map: list = []
 
     def compose(self) -> ComposeResult:
         yield ListView(id="merchants-list")
 
-    def bind_data(self, *, store) -> None:
+    def bind_data(
+        self,
+        *,
+        store,
+        fw_transactions: list = None,
+        ynab_payees: list = None,
+        ynab_client=None,
+        budget_id: Optional[str] = None,
+    ) -> None:
         self._store = store
+        self._fw_transactions = list(fw_transactions) if fw_transactions is not None else []
+        self._ynab_payees = list(ynab_payees) if ynab_payees is not None else []
+        self._ynab_client = ynab_client
+        self._budget_id = budget_id
         self.refresh_rows()
 
     def refresh_rows(self) -> None:
         lv = self.query_one("#merchants-list", ListView)
         lv.clear()
+        self._row_map = []
         if self._store is None:
             return
-        # Don't set explicit IDs on ListItems — Textual retains them in the
-        # node registry across clear() calls until the next event tick, which
-        # causes DuplicateIds on the second refresh. (Lesson from Task 7.)
+
+        # 1. Unmapped merchants — derive from fw_transactions.
+        from finab.engine.merchants import _extract_distinct_merchants
+        all_distinct = _extract_distinct_merchants(self._fw_transactions)
+        # store.finwise is keyed by fw_id: {"fw-m1": {...}, ...}
+        mapped_fw_ids = {
+            fw_id
+            for m in self._store.merchants()
+            for fw_id in (m.get("finwise") or {})
+        }
+        unmapped = [d for d in all_distinct if d["id"] not in mapped_fw_ids]
+        for fw_m in unmapped:
+            name = fw_m.get("name") or "(no name)"
+            text = f"!  {name:<22.22}  →  (unlinked — press `l` to map)"
+            lv.append(ListItem(Label(text)))
+            self._row_map.append(("unmapped", fw_m))
+
+        # 2. Mapped store merchants.
         for m in self._store.merchants():
             glyph = _merchant_glyph(m)
             alias = m.get("alias", "?")
@@ -48,22 +84,38 @@ class MerchantsScreen(Container):
             link_kind = "transfer payee" if ynab.get("transfer_account_id") else ("payee" if ynab.get("id") else "")
             text = f"{glyph}  {alias:<22.22}  →  {yn_name:<26.26}  {link_kind}"
             lv.append(ListItem(Label(text)))
+            self._row_map.append(("mapped", m))
 
     def row_count(self) -> int:
-        return len(list(self._store.merchants())) if self._store else 0
+        return len(self._row_map)
+
+    def has_unmapped_for(self, fw_id: str) -> bool:
+        for kind, payload in self._row_map:
+            if kind == "unmapped" and payload.get("id") == fw_id:
+                return True
+        return False
 
     def set_cursor(self, index: int) -> None:
         self.query_one("#merchants-list", ListView).index = index
 
-    def _current_merchant(self) -> Optional[dict]:
+    def _current_row(self):
         lv = self.query_one("#merchants-list", ListView)
         idx = lv.index
-        if idx is None or self._store is None:
+        if idx is None or not (0 <= idx < len(self._row_map)):
             return None
-        merchants = list(self._store.merchants())
-        if 0 <= idx < len(merchants):
-            return merchants[idx]
-        return None
+        return self._row_map[idx]
+
+    def _current_merchant(self) -> Optional[dict]:
+        row = self._current_row()
+        if row is None or row[0] != "mapped":
+            return None
+        return row[1]
+
+    def _current_unmapped(self):
+        row = self._current_row()
+        if row is None or row[0] != "unmapped":
+            return None
+        return row[1]
 
     def action_rename(self) -> None:
         m = self._current_merchant()
@@ -83,7 +135,83 @@ class MerchantsScreen(Container):
 
         self.app.push_screen(modal, callback=_on_done)
 
-    def action_relink(self) -> None:
-        # Plan 3 scope: bell. Plan 4 (or follow-up) adds proper picker
-        # over YNAB payees + own accounts.
-        self.app.bell()
+    def action_link(self) -> None:
+        """Map an unmapped merchant. Bells on a mapped row."""
+        fw_m = self._current_unmapped()
+        if fw_m is None:
+            self.app.bell()
+            return
+        if self._ynab_client is None or self._budget_id is None:
+            self.app.bell()
+            return
+
+        from finab.tui.widgets.alias_input import AliasInputModal
+        modal = AliasInputModal(
+            prompt=f"Alias for merchant '{fw_m.get('name') or fw_m['id']}':",
+            default=fw_m.get("name") or "",
+        )
+
+        def _on_alias(alias):
+            if alias is None:
+                return
+            self._continue_link_flow(fw_m, alias)
+
+        self.app.push_screen(modal, callback=_on_alias)
+
+    def _continue_link_flow(self, fw_m: dict, alias: str) -> None:
+        """Three-source resolution: store-account-as-transfer-payee,
+        existing YNAB payee, or create new payee."""
+        from finab.engine.merchants import _link_account_transfer_payee
+        # 1. Does the alias match a store account? Link to that account's
+        # transfer payee (own-account transfers).
+        if _link_account_transfer_payee(self._store, self._ynab_payees, alias, fw_m):
+            self.refresh_rows()
+            return
+
+        # 2. Existing YNAB payee by name?
+        from finab.store import normalize_alias, to_dict
+        match = next(
+            (
+                p for p in self._ynab_payees
+                if normalize_alias(getattr(p, "name", "")) == normalize_alias(alias)
+                and not getattr(p, "deleted", False)
+                and not getattr(p, "transfer_account_id", None)
+            ),
+            None,
+        )
+        if match is not None:
+            self._store.add_merchant(
+                alias=alias,
+                fw_record=fw_m,
+                ynab_record=to_dict(match),
+            )
+            self.refresh_rows()
+            return
+
+        # 3. No match — confirm create.
+        from finab.tui.widgets.yes_no_modal import YesNoModal
+        modal = YesNoModal(
+            message=f"No YNAB payee named '{alias}' exists. Create a new one?",
+        )
+
+        def _on_confirm(answer):
+            if not answer:
+                return
+            self._create_and_link(fw_m, alias)
+
+        self.app.push_screen(modal, callback=_on_confirm)
+
+    def _create_and_link(self, fw_m: dict, alias: str) -> None:
+        try:
+            new_payee = self._ynab_client.create_payee(self._budget_id, alias)
+        except Exception:
+            self.app.bell()
+            return
+        from finab.store import to_dict
+        self._store.add_merchant(
+            alias=alias,
+            fw_record=fw_m,
+            ynab_record=to_dict(new_payee),
+        )
+        self._ynab_payees.append(new_payee)
+        self.refresh_rows()

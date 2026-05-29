@@ -137,7 +137,13 @@ class FinabApp(App):
                 budget_id=self._budget_id,
             )
             merchants_screen = self.query_one(MerchantsScreen)
-            merchants_screen.bind_data(store=self._store)
+            merchants_screen.bind_data(
+                store=self._store,
+                fw_transactions=self.loaded.fw_transactions,
+                ynab_payees=self.loaded.ynab_payees,
+                ynab_client=self._ynab_client,
+                budget_id=self._budget_id,
+            )
             memory_screen = self.query_one(MemoryScreen)
             memory_screen.bind_data(store=self._store)
 
@@ -215,9 +221,9 @@ class FinabApp(App):
 
     def action_accounts_relink(self) -> None:
         if self._accounts_screen_active():
-            self.query_one(AccountsScreen).action_relink()
+            self.query_one(AccountsScreen).action_link()
         elif self._merchants_screen_active():
-            self.query_one(MerchantsScreen).action_relink()
+            self.query_one(MerchantsScreen).action_link()
 
     def action_accounts_toggle_ignore(self) -> None:
         if self._accounts_screen_active():
