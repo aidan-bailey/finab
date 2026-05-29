@@ -228,3 +228,24 @@ YnabPayeePicker {
     text-style: bold;
     padding-bottom: 1;
 }
+
+YesNoModal {
+    align: center middle;
+}
+
+#yes-no-dialog {
+    width: 60;
+    height: auto;
+    border: thick $primary;
+    padding: 1 2;
+    background: $surface;
+}
+
+#yes-no-message {
+    padding-bottom: 1;
+    text-style: bold;
+}
+
+#yes-no-hints {
+    color: $text-muted;
+}
