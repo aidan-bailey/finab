@@ -7,6 +7,7 @@ on that data; placeholder screens don't care.
 from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal
+from textual.reactive import reactive
 from textual.widgets import ContentSwitcher, Footer, Label, ListItem, ListView
 
 from finab.tui.data_loader import LoadedData, load_all
@@ -34,6 +35,11 @@ class FinabApp(App):
     """Root app: sidebar nav + content switcher."""
 
     CSS_PATH = "styles.tcss"
+
+    # Tracks which sidebar screen is currently visible. Drives check_action
+    # so the Footer only shows bindings relevant to the active screen.
+    # bindings=True makes Textual auto-refresh the Footer when this changes.
+    _active_screen = reactive("screen-sync", bindings=True)
 
     BINDINGS = [
         ("q", "quit_with_confirm", "Quit"),
@@ -155,6 +161,7 @@ class FinabApp(App):
             screen_id = item_id.removeprefix("item-")
             switcher = self.query_one("#content-switcher", ContentSwitcher)
             switcher.current = screen_id
+            self._active_screen = screen_id
 
     def _sync_screen_active(self) -> bool:
         """True when the Sync screen is the currently visible content pane."""
@@ -241,6 +248,38 @@ class FinabApp(App):
     def action_memory_reset(self) -> None:
         if self._memory_screen_active():
             self.query_one(MemoryScreen).action_reset()
+
+    # --- Action visibility (Footer scoping) ---
+
+    _ALWAYS_VISIBLE = {"quit_with_confirm", "show_help"}
+    _SYNC_ACTIONS = {
+        "sync_category", "sync_split", "sync_history",
+        "sync_force_transfer", "sync_undo", "sync_flush",
+        "sync_repeat_closest", "sync_top", "sync_bottom",
+    }
+    _ACCOUNTS_OR_MERCHANTS_ACTIONS = {"accounts_rename", "accounts_relink"}
+    _ACCOUNTS_ONLY_ACTIONS = {"accounts_toggle_ignore"}
+    _MEMORY_ACTIONS = {"memory_delete", "memory_reset"}
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        """Hide bindings that don't apply to the active screen.
+
+        Returns True (visible + active), False (hidden), or None (grayed).
+        We use True/False — never gray — since these bindings either apply
+        or they don't.
+        """
+        if action in self._ALWAYS_VISIBLE:
+            return True
+        if action in self._SYNC_ACTIONS:
+            return self._active_screen == "screen-sync"
+        if action in self._ACCOUNTS_OR_MERCHANTS_ACTIONS:
+            return self._active_screen in ("screen-accounts", "screen-merchants")
+        if action in self._ACCOUNTS_ONLY_ACTIONS:
+            return self._active_screen == "screen-accounts"
+        if action in self._MEMORY_ACTIONS:
+            return self._active_screen == "screen-memory"
+        # Unknown action — allow (defensive).
+        return True
 
     def action_quit_with_confirm(self) -> None:
         """Quit, but if Sync has decided-but-not-flushed candidates,

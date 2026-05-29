@@ -71,6 +71,77 @@ async def test_sidebar_navigation_switches_content():
         assert switcher.current == "screen-accounts"
 
 
+@pytest.mark.asyncio
+async def test_check_action_hides_sync_bindings_when_settings_active():
+    """When the Settings screen is active, sync-only bindings should be hidden."""
+    from finab.tui.app import FinabApp
+    app = FinabApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Switch to settings.
+        app._active_screen = "screen-settings"
+        await pilot.pause()
+        # Sync bindings: hidden.
+        assert app.check_action("sync_category", ()) is False
+        assert app.check_action("sync_flush", ()) is False
+        assert app.check_action("sync_repeat_closest", ()) is False
+        # Quit and help: still visible.
+        assert app.check_action("quit_with_confirm", ()) is True
+        assert app.check_action("show_help", ()) is True
+
+
+@pytest.mark.asyncio
+async def test_check_action_shows_sync_bindings_when_sync_active():
+    from finab.tui.app import FinabApp
+    app = FinabApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._active_screen = "screen-sync"
+        await pilot.pause()
+        assert app.check_action("sync_category", ()) is True
+        assert app.check_action("sync_flush", ()) is True
+        # Memory bindings: hidden.
+        assert app.check_action("memory_delete", ()) is False
+        assert app.check_action("memory_reset", ()) is False
+
+
+@pytest.mark.asyncio
+async def test_check_action_rename_visible_on_both_accounts_and_merchants():
+    """accounts_rename dispatches to both AccountsScreen and MerchantsScreen
+    (legacy name from Plan 3). It should be visible on either."""
+    from finab.tui.app import FinabApp
+    app = FinabApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._active_screen = "screen-accounts"
+        await pilot.pause()
+        assert app.check_action("accounts_rename", ()) is True
+        assert app.check_action("accounts_toggle_ignore", ()) is True  # accounts-only
+        app._active_screen = "screen-merchants"
+        await pilot.pause()
+        assert app.check_action("accounts_rename", ()) is True
+        # toggle_ignore is accounts-only — hidden on merchants.
+        assert app.check_action("accounts_toggle_ignore", ()) is False
+
+
+@pytest.mark.asyncio
+async def test_sidebar_navigation_updates_active_screen():
+    """When the user moves the sidebar cursor, _active_screen tracks the new screen."""
+    from finab.tui.app import FinabApp
+    app = FinabApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Initial state: sync is the default.
+        assert app._active_screen == "screen-sync"
+        # Move sidebar cursor down to Accounts.
+        sidebar = app.query_one("#sidebar")
+        sidebar.focus()
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.pause()
+        assert app._active_screen == "screen-accounts"
+
+
 def test_main_runs_tui_by_default(monkeypatch):
     """With no flag and no env var, main() launches FinabApp."""
     monkeypatch.delenv("FINAB_TUI", raising=False)
