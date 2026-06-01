@@ -69,6 +69,7 @@ class FinabApp(App):
         ("s", "sync_split", "Split"),
         ("r", "sync_history", "Repeat history"),
         ("t", "sync_force_transfer", "Force transfer"),
+        ("m", "sync_map_merchant", "Map merchant"),
         ("u", "sync_undo", "Undo"),
         ("f", "sync_flush", "Flush"),
         ("enter", "sync_repeat_closest", "Repeat closest"),
@@ -181,6 +182,7 @@ class FinabApp(App):
                 loaded=self.loaded,
                 store=self._store,
                 tx_store=self._tx_store,
+                ynab_payees=self.loaded.ynab_payees,
             )
             accounts_screen = self.query_one(AccountsScreen)
             accounts_screen.bind_data(
@@ -249,6 +251,11 @@ class FinabApp(App):
             from finab.tui.screens.sync import SyncScreen
             self.query_one(SyncScreen).action_force_transfer()
 
+    def action_sync_map_merchant(self) -> None:
+        if self._sync_screen_active():
+            from finab.tui.screens.sync import SyncScreen
+            self.query_one(SyncScreen).action_map_merchant()
+
     def action_sync_top(self) -> None:
         if self._sync_screen_active():
             from finab.tui.screens.sync import SyncScreen
@@ -303,7 +310,7 @@ class FinabApp(App):
     _ALWAYS_VISIBLE = {"quit_with_confirm", "show_help"}
     _SYNC_ACTIONS = {
         "sync_category", "sync_split", "sync_history",
-        "sync_force_transfer", "sync_undo", "sync_flush",
+        "sync_force_transfer", "sync_map_merchant", "sync_undo", "sync_flush",
         "sync_repeat_closest", "sync_top", "sync_bottom",
     }
     _ACCOUNTS_OR_MERCHANTS_ACTIONS = {"accounts_rename", "accounts_relink"}

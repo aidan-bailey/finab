@@ -31,6 +31,7 @@ class SyncScreen(Container):
         self._engine = None
         self._store = None
         self._tx_store = None
+        self._ynab_payees: list = []
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -68,12 +69,13 @@ class SyncScreen(Container):
         else:
             card.set_candidate(None)
 
-    def bind_data(self, *, loaded, store, tx_store) -> None:
+    def bind_data(self, *, loaded, store, tx_store, ynab_payees=None) -> None:
         """Build a SyncEngine from loaded data and push its candidates
         into the view. The screen retains references to the engine and
         store so subsequent actions (apply, undo, flush) can dispatch."""
         self._store = store
         self._tx_store = tx_store
+        self._ynab_payees = list(ynab_payees) if ynab_payees is not None else []
         self._engine = SyncEngine(
             fw_transactions=loaded.fw_transactions,
             ynab_transactions=loaded.ynab_transactions,
@@ -271,6 +273,122 @@ class SyncScreen(Container):
             pl.index = len(pl.candidates) - 1
             card = self.query_one("#sync-detail", TransactionCard)
             card.set_candidate(pl.current_candidate(), alias_of=self._alias_of)
+
+    def action_map_merchant(self) -> None:
+        """Open the alias flow for the current no-merchant candidate.
+
+        Runs the same 3-source resolution as MerchantsScreen.action_link:
+        store-account-as-transfer-payee → existing YNAB payee → create new.
+        After the merchant is linked, re-evaluates the candidate in-place
+        (transfer / pre-month / plain pending) without rebuilding the engine.
+        """
+        c = self._current_candidate()
+        if c is None or c.auto_reason != "no-merchant" or self._store is None:
+            self.app.bell()
+            return
+        merchant_id = getattr(c.txn, "merchant_id", None)
+        if not merchant_id:
+            self.app.bell()
+            return
+        merchant_name = getattr(c.txn, "merchant_name", None)
+        fw_record = {"id": merchant_id, "name": merchant_name or merchant_id}
+
+        from finab.tui.widgets.alias_input import AliasInputModal
+        modal = AliasInputModal(
+            prompt=f"Alias for '{merchant_name or merchant_id}':",
+            default=merchant_name or "",
+        )
+
+        def _on_alias(alias):
+            if alias is None:
+                return
+            self._link_merchant_flow(c, fw_record, alias)
+
+        self.app.push_screen(modal, callback=_on_alias)
+
+    def _link_merchant_flow(self, c: Candidate, fw_record: dict, alias: str) -> None:
+        from finab.engine.merchants import _link_account_transfer_payee
+        from finab.store import normalize_alias, to_dict
+
+        # 1. Account-as-transfer: alias matches one of the user's own accounts.
+        if _link_account_transfer_payee(self._store, self._ynab_payees, alias, fw_record):
+            self._after_merchant_linked(c)
+            return
+
+        # 2. Existing YNAB payee by name.
+        match = next(
+            (
+                p for p in self._ynab_payees
+                if normalize_alias(getattr(p, "name", "")) == normalize_alias(alias)
+                and not getattr(p, "deleted", False)
+                and not getattr(p, "transfer_account_id", None)
+            ),
+            None,
+        )
+        if match is not None:
+            self._store.add_merchant(alias=alias, fw_record=fw_record, ynab_record=to_dict(match))
+            self._after_merchant_linked(c)
+            return
+
+        # 3. No match — confirm create.
+        from finab.tui.widgets.yes_no_modal import YesNoModal
+        modal = YesNoModal(message=f"No YNAB payee named '{alias}' exists. Create a new one?")
+
+        def _on_confirm(answer):
+            if not answer:
+                return
+            ynab_client = getattr(self.app, "_ynab_client", None)
+            budget_id = getattr(self.app, "_budget_id", None)
+            if not ynab_client or not budget_id:
+                self.app.bell()
+                return
+            try:
+                new_payee = ynab_client.create_payee(budget_id, alias)
+            except Exception:
+                self.app.bell()
+                return
+            self._ynab_payees.append(new_payee)
+            self._store.add_merchant(alias=alias, fw_record=fw_record, ynab_record=to_dict(new_payee))
+            self._after_merchant_linked(c)
+
+        self.app.push_screen(modal, callback=_on_confirm)
+
+    def _after_merchant_linked(self, c: Candidate) -> None:
+        """Re-evaluate a formerly no-merchant candidate after its merchant is linked."""
+        from finab.engine.sync import _is_transfer, _is_before_current_month
+        merchant_id = getattr(c.txn, "merchant_id", None)
+        merchant = self._store.merchant_by_finwise_id(merchant_id) if merchant_id else None
+        if merchant is None:
+            return
+
+        if _is_transfer(merchant):
+            c.txn.payee_id = merchant["ynab"]["id"]
+            c.txn.payee_name = None
+            c.txn.category_id = None
+            c.txn.subtransactions = []
+            c.status = "auto"
+            c.auto_reason = "transfer"
+        elif _is_before_current_month(c.txn):
+            c.txn.payee_id = merchant["ynab"].get("id")
+            c.txn.payee_name = None
+            c.txn.category_id = None
+            c.txn.subtransactions = []
+            c.status = "pending"
+            c.auto_reason = "pre-month"
+        else:
+            c.txn.payee_id = merchant["ynab"].get("id")
+            c.txn.payee_name = None
+            c.status = "pending"
+            c.auto_reason = None
+
+        pl = self.query_one("#sync-pending", PendingList)
+        pl.refresh_row(c.id)
+        card = self.query_one("#sync-detail", TransactionCard)
+        card.set_candidate(c, alias_of=self._alias_of)
+        try:
+            self.app._refresh_header_stats()
+        except Exception:
+            pass
 
     def _refresh_after_decision(self, candidate_id: str) -> None:
         """After an engine.apply_*, rebuild the row and move cursor down one."""
