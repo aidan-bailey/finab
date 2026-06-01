@@ -7,13 +7,25 @@ from datetime import date
 from typing import Optional
 
 from textual.app import ComposeResult
-from textual.containers import Horizontal
+from textual.widget import Widget
 from textual.widgets import Static
 
 
-class FinabHeader(Horizontal):
+class FinabHeader(Widget):
     """Top-of-app header. Reads pending/decided counts from the
     SyncEngine via the parent app when refresh_stats() is called.
+
+    Extends Widget (not Horizontal) so DEFAULT_CSS height: 1 is not
+    overridden by Horizontal's inherited height: 1fr layout constraint.
+    """
+
+    DEFAULT_CSS = """
+    FinabHeader {
+        layout: horizontal;
+        height: 1;
+        background: $panel;
+        padding: 0 2;
+    }
     """
 
     def compose(self) -> ComposeResult:

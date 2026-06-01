@@ -6,13 +6,7 @@ Screen {
     color: $foreground;
 }
 
-/* --- Header --- */
-
-FinabHeader {
-    height: 1;
-    background: $panel;
-    padding: 0 2;
-}
+/* --- Header (layout/height/background controlled via FinabHeader.DEFAULT_CSS) --- */
 
 #header-wordmark {
     width: 12;
