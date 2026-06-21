@@ -28,6 +28,7 @@ class SyncScreen(Container):
         super().__init__(id=id)
         self._candidates: list[Candidate] = []
         self._alias_of: Callable[[Candidate], str] = _placeholder_alias_of
+        self._account_of: Optional[Callable[[Candidate], str]] = None
         self._engine = None
         self._store = None
         self._tx_store = None
@@ -47,11 +48,13 @@ class SyncScreen(Container):
         candidates: Iterable[Candidate],
         *,
         alias_of: Callable[[Candidate], str],
+        account_of: Optional[Callable[[Candidate], str]] = None,
     ) -> None:
         """Replace the screen's candidate list. Updates PendingList in-place
         and refreshes the card."""
         self._candidates = list(candidates)
         self._alias_of = alias_of
+        self._account_of = account_of
 
         # Update PendingList in-place using clear-and-rebuild (same pattern as
         # PendingList.refresh_row — avoids mount(before=) reliability issues).
@@ -65,7 +68,7 @@ class SyncScreen(Container):
         # Refresh detail with the first candidate (if any).
         card = self.query_one("#sync-detail", TransactionCard)
         if self._candidates:
-            card.set_candidate(self._candidates[0], alias_of=alias_of)
+            card.set_candidate(self._candidates[0], alias_of=alias_of, account_of=account_of)
         else:
             card.set_candidate(None)
 
@@ -91,7 +94,11 @@ class SyncScreen(Container):
             merchant = store.merchant_by_finwise_id(merchant_id)
             return merchant.get("alias") if merchant else None
 
-        self.set_candidates(self._engine.candidates, alias_of=alias_of)
+        def account_of(candidate):
+            acc = store.account_by_ynab_id(getattr(candidate.txn, "account_id", None) or "")
+            return acc["alias"] if acc else None
+
+        self.set_candidates(self._engine.candidates, alias_of=alias_of, account_of=account_of)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         """When the cursor in PendingList moves, refresh the detail card."""
@@ -100,7 +107,7 @@ class SyncScreen(Container):
             return  # not our list (e.g., the sidebar)
         current = pl.current_candidate()
         card = self.query_one("#sync-detail", TransactionCard)
-        card.set_candidate(current, alias_of=self._alias_of)
+        card.set_candidate(current, alias_of=self._alias_of, account_of=self._account_of)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """ListView fires Selected on Enter. For the pending list, treat that
@@ -265,14 +272,14 @@ class SyncScreen(Container):
         if pl.candidates:
             pl.index = 0
             card = self.query_one("#sync-detail", TransactionCard)
-            card.set_candidate(pl.current_candidate(), alias_of=self._alias_of)
+            card.set_candidate(pl.current_candidate(), alias_of=self._alias_of, account_of=self._account_of)
 
     def action_bottom(self) -> None:
         pl = self.query_one("#sync-pending", PendingList)
         if pl.candidates:
             pl.index = len(pl.candidates) - 1
             card = self.query_one("#sync-detail", TransactionCard)
-            card.set_candidate(pl.current_candidate(), alias_of=self._alias_of)
+            card.set_candidate(pl.current_candidate(), alias_of=self._alias_of, account_of=self._account_of)
 
     def action_map_merchant(self) -> None:
         """Open the alias flow for the current no-merchant candidate.
@@ -384,7 +391,7 @@ class SyncScreen(Container):
         pl = self.query_one("#sync-pending", PendingList)
         pl.refresh_row(c.id)
         card = self.query_one("#sync-detail", TransactionCard)
-        card.set_candidate(c, alias_of=self._alias_of)
+        card.set_candidate(c, alias_of=self._alias_of, account_of=self._account_of)
         try:
             self.app._refresh_header_stats()
         except Exception:
@@ -400,4 +407,4 @@ class SyncScreen(Container):
             pl.index = next_idx
         # Refresh the detail card.
         card = self.query_one("#sync-detail", TransactionCard)
-        card.set_candidate(pl.current_candidate(), alias_of=self._alias_of)
+        card.set_candidate(pl.current_candidate(), alias_of=self._alias_of, account_of=self._account_of)

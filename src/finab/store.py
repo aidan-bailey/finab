@@ -78,6 +78,7 @@ class ConfigStore:
 
         self._fw_account_index: dict[str, str] = {}
         self._alias_account_index: dict[str, str] = {}
+        self._ynab_account_index: dict[str, str] = {}
         self._fw_merchant_index: dict[str, str] = {}
         self._alias_merchant_index: dict[str, str] = {}
 
@@ -87,6 +88,9 @@ class ConfigStore:
                 self._fw_account_index[fw["id"]] = acc["id"]
             if acc.get("alias"):
                 self._alias_account_index[normalize_alias(acc["alias"])] = acc["id"]
+            yn_id = acc.get("ynab", {}).get("id")
+            if yn_id:
+                self._ynab_account_index[str(yn_id)] = acc["id"]
 
         for m in self._data.get("merchants", {}).values():
             for fw_id in m.get("finwise", {}):
@@ -131,6 +135,12 @@ class ConfigStore:
 
     def account_by_alias(self, alias: str) -> Optional[dict]:
         internal_id = self._alias_account_index.get(normalize_alias(alias))
+        if not internal_id:
+            return None
+        return self._data["accounts"][internal_id]
+
+    def account_by_ynab_id(self, ynab_id: str) -> Optional[dict]:
+        internal_id = self._ynab_account_index.get(str(ynab_id))
         if not internal_id:
             return None
         return self._data["accounts"][internal_id]

@@ -41,6 +41,7 @@ class TransactionCard(Container):
 
     TransactionCard.empty #card-amount,
     TransactionCard.empty #card-merchant,
+    TransactionCard.empty #card-account,
     TransactionCard.empty #card-status,
     TransactionCard.empty #card-meta,
     TransactionCard.empty #card-warnings {
@@ -73,6 +74,11 @@ class TransactionCard(Container):
     #card-merchant {
         color: $foreground;
         text-style: bold;
+        padding-bottom: 0;
+    }
+
+    #card-account {
+        color: $text-muted;
         padding-bottom: 1;
     }
 
@@ -101,6 +107,7 @@ class TransactionCard(Container):
         yield Static("(select a transaction)", id="card-empty")
         yield Static("", id="card-amount")
         yield Static("", id="card-merchant")
+        yield Static("", id="card-account")
         yield Static("", id="card-status")
         yield Static("", id="card-meta")
         yield Static("", id="card-warnings")
@@ -113,6 +120,7 @@ class TransactionCard(Container):
         candidate: Optional[Candidate],
         *,
         alias_of: Callable[[Candidate], str] = None,
+        account_of: Callable[[Candidate], str] = None,
     ) -> None:
         """Re-render to show this candidate. None clears to empty state."""
         if candidate is None:
@@ -135,6 +143,10 @@ class TransactionCard(Container):
 
         # Merchant.
         self.query_one("#card-merchant", Static).update(alias.upper())
+
+        # Account.
+        account_name = (account_of(candidate) if account_of else None) or ""
+        self.query_one("#card-account", Static).update(account_name)
 
         # Status badge.
         status_widget = self.query_one("#card-status", Static)
