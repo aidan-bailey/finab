@@ -891,7 +891,22 @@ class SyncEngine:
             ynab_client.create_transactions(budget_id, [c.txn for c in creates])
             for c in creates:
                 c.status = "flushed"
+            self._record_suppressed_partners(creates)
         if updates:
             ynab_client.update_transactions(budget_id, [c.txn for c in updates])
             for c in updates:
                 c.status = "flushed"
+            self._record_suppressed_partners(updates)
+
+    def _record_suppressed_partners(self, batch) -> None:
+        """For each flushed keep-side in `batch`, point its suppressed
+        counterpart's FW uuid at the kept side's import_id so dedup's
+        'transfer twin resolved' path skips it forever, then mark it flushed.
+        Called right after a batch is pushed so a later batch's failure can't
+        strand the recording."""
+        for c in batch:
+            if c.transfer_role == "keep" and c.transfer_partner_id:
+                partner = self._candidate(c.transfer_partner_id)
+                if partner.status == "merged":
+                    self._tx_store.record(partner.txn.fw_uuid, c.txn.import_id)
+                    partner.status = "flushed"

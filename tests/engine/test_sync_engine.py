@@ -830,6 +830,53 @@ class TestTransferMatchingInEngine:
         assert keep.status == "pending"
         assert sup.status == "auto" and sup.auto_reason == "inflow"
 
+    def test_flush_records_suppressed_side_and_marks_flushed(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-10")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store, tx_store=tx_store,
+        )
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        sup = next(c for c in engine.candidates if c.transfer_role == "suppress")
+        client = _FakeYnabClient()
+        engine.flush(client, budget_id="bid")
+        # Only the keep side was pushed (one create); suppressed side never sent.
+        assert len(client.created) == 1 and len(client.created[0]) == 1
+        assert client.created[0][0] is keep.txn
+        # Suppressed FW uuid now maps to the kept side's import_id.
+        assert tx_store.import_id_for("i") == keep.txn.import_id
+        assert keep.status == "flushed" and sup.status == "flushed"
+
+    def test_suppressed_partner_recorded_before_a_failing_update_batch(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-10")
+        # A separate non-transfer txn forced onto the UPDATE path (pre-set ynab_id).
+        upd = _build_txn(fw_uuid="u", amount=-1234, account_id="fw-a", date_str="2026-05-10")
+        upd.ynab_id = "yn-existing-1"
+        engine = SyncEngine(
+            fw_transactions=[out, inn, upd], ynab_transactions=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store, tx_store=tx_store,
+        )
+        upd_c = next(c for c in engine.candidates if c.txn.fw_uuid == "u")
+        engine.apply_category(upd_c.id, category_id="cat-x")
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        sup = next(c for c in engine.candidates if c.transfer_role == "suppress")
+        client = _FakeYnabClient(fail_on="update")
+        with pytest.raises(RuntimeError, match="simulated"):
+            engine.flush(client, budget_id="bid")
+        # Creates batch (transfer keep) succeeded and its partner was recorded
+        # BEFORE the failing update batch — so no duplicate on the next sync.
+        assert keep.status == "flushed"
+        assert sup.status == "flushed"
+        assert tx_store.import_id_for("i") == keep.txn.import_id
+
 
 class TestNoMerchantAndPreMonthAreBlocked:
     """The user explicitly disabled auto-pushing of no-merchant and pre-month
