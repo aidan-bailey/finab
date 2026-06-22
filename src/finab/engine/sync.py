@@ -558,19 +558,16 @@ class SyncEngine:
         ]
 
     def _build_candidate(self, txn) -> Candidate:
-        """Construct a Candidate around `txn` and apply auto-rules.
+        """Construct a Candidate around `txn`, then apply auto-rules."""
+        candidate = Candidate(id=txn.import_id, txn=txn)
+        self._apply_auto_rules(candidate)
+        return candidate
 
-        Auto-rules (status="auto"), in priority order:
-          (a) inflow: positive amount + inflow category exists
-          (b) transfer: txn's merchant links to an account's transfer payee
-        Blocked paths (status="pending", auto_reason set for UI glyph):
-          (c) no-merchant: no merchant resolvable  → pending/"no-merchant"
-          (d) pre-month: txn dated before first of current month  → pending/"pre-month"
-        Otherwise: status = pending (user must decide).
-        """
-        # `txn.import_id` is now our durable id (set by merge_and_filter_transactions).
-        cid = txn.import_id
-        candidate = Candidate(id=cid, txn=txn)
+    def _apply_auto_rules(self, candidate: "Candidate") -> None:
+        """Apply inflow/transfer/no-merchant/pre-month/pending rules to an
+        existing candidate, mutating its txn + status + auto_reason in place.
+        (Extracted verbatim from the original _build_candidate body.)"""
+        txn = candidate.txn
 
         # (a) Inflow
         if _is_inflow(txn):
@@ -580,16 +577,14 @@ class SyncEngine:
                 txn.subtransactions = []
                 candidate.status = "auto"
                 candidate.auto_reason = "inflow"
-                return candidate
-            # No inflow category — fall through to merchant logic
-            # (matches today's _process_one_transaction).
+                return
 
         merchant = None
         fw_mid = getattr(txn, "merchant_id", None)
         if fw_mid:
             merchant = self._store.merchant_by_finwise_id(fw_mid)
 
-        # (b) Transfer
+        # (b) Transfer (merchant linked to an account transfer payee)
         if _is_transfer(merchant):
             txn.payee_id = merchant["ynab"]["id"]
             txn.payee_name = None
@@ -597,13 +592,9 @@ class SyncEngine:
             txn.subtransactions = []
             candidate.status = "auto"
             candidate.auto_reason = "transfer"
-            return candidate
+            return
 
         # (b2) Warning: FW says transfer but merchant isn't a transfer payee.
-        # We still flow through to the normal auto/pending paths — this
-        # transaction will be pushed without a transfer payee linkage,
-        # which is wrong but recoverable. Surface a warning so the user
-        # can fix the merchant linkage later.
         if getattr(txn, "is_transfer", False):
             if merchant:
                 candidate.warnings.append(
@@ -617,17 +608,15 @@ class SyncEngine:
                     "linked. It will push without a transfer payee."
                 )
 
-        # (c) No merchant — DON'T auto-push (user must act). status=pending so
-        # flush() skips this, but auto_reason stays set so the UI can render ✗.
+        # (c) No merchant
         if not merchant:
             txn.category_id = None
             txn.subtransactions = []
             candidate.status = "pending"
             candidate.auto_reason = "no-merchant"
-            return candidate
+            return
 
-        # (d) Before current month — same treatment: keep merchant linkage but
-        # don't push without categorization. status=pending so flush() skips.
+        # (d) Before current month
         if _is_before_current_month(txn):
             txn.payee_id = merchant["ynab"].get("id")
             txn.payee_name = None
@@ -635,13 +624,11 @@ class SyncEngine:
             txn.subtransactions = []
             candidate.status = "pending"
             candidate.auto_reason = "pre-month"
-            return candidate
+            return
 
-        # Default: pending — user must decide. We still set the payee from
-        # the merchant since that's not a decision the user makes.
+        # Default: pending, payee set from merchant.
         txn.payee_id = merchant["ynab"].get("id")
         txn.payee_name = None
-        return candidate
 
     def _candidate(self, candidate_id: str) -> "Candidate":
         """Look up a candidate by id. Raises KeyError if not found."""
