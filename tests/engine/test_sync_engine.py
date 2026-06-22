@@ -781,6 +781,55 @@ class TestTransferMatchingInEngine:
         assert keep.status == "pending" and keep.auto_reason == "transfer-suggested"
         assert keep.txn.payee_id == "tp-b"
 
+    def test_confirm_suggested_transfer_marks_decided(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10", merchant_id="x")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-11", merchant_id="y")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[], ynab_categories=[],
+            store=store, tx_store=tx_store, transfer_match_window_days=1,
+        )
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        engine.confirm_transfer_match(keep.id)
+        assert keep.status == "decided"
+        assert keep.txn.payee_id == "tp-b"
+
+    def test_undo_transfer_reverts_both_sides(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-10")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store, tx_store=tx_store,
+        )
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        sup = next(c for c in engine.candidates if c.transfer_role == "suppress")
+        engine.undo(keep.id)
+        # Both lose their transfer role; suppress side re-enters normal rules.
+        assert keep.transfer_role is None and sup.transfer_role is None
+        assert keep.status == "pending"          # outflow, no merchant → no-merchant
+        assert sup.status == "auto" and sup.auto_reason == "inflow"   # inflow reclaimed
+
+    def test_undo_transfer_from_suppress_side_reverts_both(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-10")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store, tx_store=tx_store,
+        )
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        sup = next(c for c in engine.candidates if c.transfer_role == "suppress")
+        engine.undo(sup.id)   # undo triggered from the suppressed (inflow) side
+        assert keep.transfer_role is None and sup.transfer_role is None
+        assert keep.status == "pending"
+        assert sup.status == "auto" and sup.auto_reason == "inflow"
+
 
 class TestNoMerchantAndPreMonthAreBlocked:
     """The user explicitly disabled auto-pushing of no-merchant and pre-month

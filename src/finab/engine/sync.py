@@ -798,12 +798,58 @@ class SyncEngine:
             _update_merchant_memory(self._store, merchant, c.txn)
         c.status = "decided"
 
+    def confirm_transfer_match(self, candidate_id: str) -> None:
+        """Accept a low-confidence suggested transfer: pending -> decided.
+        The txn's transfer payee was already set at build time."""
+        c = self._candidate(candidate_id)
+        if (
+            c.status != "pending"
+            or c.transfer_role != "keep"
+            or c.auto_reason != "transfer-suggested"
+        ):
+            raise ValueError(
+                f"candidate {candidate_id!r} is not a pending suggested transfer"
+            )
+        c.prior_state = self._snapshot(c.txn)
+        c.status = "decided"
+
+    def _reevaluate(self, candidate: "Candidate") -> None:
+        """Reset a candidate's txn to a neutral state and re-run auto-rules.
+        Used after un-matching a transfer."""
+        candidate.txn.payee_id = None
+        candidate.txn.payee_name = None
+        candidate.txn.category_id = None
+        candidate.txn.subtransactions = []
+        candidate.status = "pending"
+        candidate.auto_reason = None
+        candidate.warnings = []
+        self._apply_auto_rules(candidate)
+
+    def _undo_transfer(self, c: "Candidate") -> None:
+        """Revert a matched transfer (either side): drop the match and
+        re-evaluate both sides as normal candidates."""
+        keep = c if c.transfer_role == "keep" else self._candidate(c.transfer_partner_id)
+        suppress = self._candidate(keep.transfer_partner_id)
+        if keep.status == "flushed" or suppress.status == "flushed":
+            raise ValueError("cannot undo a flushed transfer")
+        self._match_by_id.pop(keep.txn.import_id, None)
+        self._match_by_id.pop(suppress.txn.import_id, None)
+        for cand in (keep, suppress):
+            cand.transfer_role = None
+            cand.transfer_partner_id = None
+            cand.transfer_dest_alias = None
+            cand.prior_state = None
+            self._reevaluate(cand)
+
     def undo(self, candidate_id: str) -> None:
         """Revert a user decision: status decided -> pending, restore
         snapshotted fields on txn. Does NOT revert merchant memory
         (last-write-wins by amount; an undo+re-decide just overwrites).
         """
         c = self._candidate(candidate_id)
+        if c.transfer_role in ("keep", "suppress"):
+            self._undo_transfer(c)
+            return
         if c.status != "decided":
             raise ValueError(
                 f"cannot undo candidate with status {c.status!r}; "
