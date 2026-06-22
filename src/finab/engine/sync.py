@@ -401,6 +401,85 @@ def _sort_key(store: "ConfigStore"):
     return key
 
 
+@dataclass
+class TransferMatch:
+    """One detected transfer pair. keep_txn (the outflow) is pushed to YNAB
+    with payee = dest_transfer_payee_id; YNAB auto-creates the mirror in the
+    destination account, so suppress_txn (the inflow) is not pushed."""
+    keep_txn: Any
+    suppress_txn: Any
+    dest_transfer_payee_id: str
+    dest_alias: str
+    confidence: str  # "high" | "low"
+
+
+def _dest_transfer_payee(store, ynab_account_id):
+    """(transfer_payee_id, alias) for a YNAB account id, or (None, None)."""
+    if not ynab_account_id:
+        return None, None
+    acc = store.account_by_ynab_id(ynab_account_id)
+    if not acc:
+        return None, None
+    ynab = acc.get("ynab") or {}
+    return ynab.get("transfer_payee_id"), acc.get("alias")
+
+
+def match_transfer_pairs(txns, store, *, window_days=1):
+    """Pair equal-and-opposite cross-account transactions into transfers.
+
+    Runs on the post-dedup batch (account_id already remapped to the YNAB
+    account id). Pools CREATES ONLY (no ynab_id) so we never suppress a txn
+    already on YNAB. Each transaction is used in at most one pair. Returns a
+    list of TransferMatch.
+
+    Confidence: HIGH iff there was exactly one viable partner AND (same day OR
+    the two sides share a merchant_id); LOW otherwise.
+    """
+    pool = [t for t in txns
+            if not getattr(t, "ynab_id", None) and getattr(t, "amount", 0)]
+    by_amount: dict = {}
+    for t in pool:
+        if t.amount > 0:
+            by_amount.setdefault(t.amount, []).append(t)
+    outflows = sorted(
+        [t for t in pool if t.amount < 0],
+        key=lambda t: (t.date, str(t.import_id)),
+    )
+
+    used: set = set()
+    matches: list = []
+    for out in outflows:
+        viable = []  # (inflow, dest_tp, dest_alias)
+        for cand in by_amount.get(-out.amount, []):
+            if id(cand) in used or cand.account_id == out.account_id:
+                continue
+            if abs((cand.date - out.date).days) > window_days:
+                continue
+            dest_tp, dest_alias = _dest_transfer_payee(store, cand.account_id)
+            if dest_tp:
+                viable.append((cand, dest_tp, dest_alias))
+        if not viable:
+            continue
+
+        def _rank(item):
+            cand = item[0]
+            shared = bool(out.merchant_id and out.merchant_id == cand.merchant_id)
+            return (0 if shared else 1, abs((cand.date - out.date).days), str(cand.import_id))
+
+        viable.sort(key=_rank)
+        best, dest_tp, dest_alias = viable[0]
+        used.add(id(best))
+        shared_merchant = bool(out.merchant_id and out.merchant_id == best.merchant_id)
+        same_day = best.date == out.date
+        confidence = "high" if (len(viable) == 1 and (same_day or shared_merchant)) else "low"
+        matches.append(TransferMatch(
+            keep_txn=out, suppress_txn=best,
+            dest_transfer_payee_id=dest_tp, dest_alias=dest_alias or "?",
+            confidence=confidence,
+        ))
+    return matches
+
+
 CandidateStatus = Literal["pending", "auto", "decided", "flushed", "merged"]
 """
 pending  — needs user input

@@ -32,6 +32,8 @@ from finab.engine.sync import (
     _render_splits,
     _sort_key,
     merge_and_filter_transactions,
+    match_transfer_pairs,
+    TransferMatch,
 )
 
 
