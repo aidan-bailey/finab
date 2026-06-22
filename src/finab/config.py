@@ -36,3 +36,19 @@ def save_budget_id(budget_id: str) -> None:
     _save_data(data)
 
 
+def load_transfer_match_window_days() -> int:
+    """Day window for pairing transfer sides. Defaults to 1."""
+    data = _load_data()
+    value = data.get("transfer_match_window_days", 1)
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 1
+
+
+def save_transfer_match_window_days(days: int) -> None:
+    data = _load_data()
+    data["transfer_match_window_days"] = int(days)
+    _save_data(data)
+
+

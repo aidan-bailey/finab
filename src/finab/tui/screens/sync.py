@@ -79,12 +79,14 @@ class SyncScreen(Container):
         self._store = store
         self._tx_store = tx_store
         self._ynab_payees = list(ynab_payees) if ynab_payees is not None else []
+        from finab.config import load_transfer_match_window_days
         self._engine = SyncEngine(
             fw_transactions=loaded.fw_transactions,
             ynab_transactions=loaded.ynab_transactions,
             ynab_categories=loaded.ynab_categories,
             store=store,
             tx_store=tx_store,
+            transfer_match_window_days=load_transfer_match_window_days(),
         )
 
         def alias_of(candidate):
