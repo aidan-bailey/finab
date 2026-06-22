@@ -812,6 +812,7 @@ class SyncEngine:
             )
         c.prior_state = self._snapshot(c.txn)
         c.status = "decided"
+        c.auto_reason = "transfer-pair"   # confirmed: no longer merely "suggested"
 
     def _reevaluate(self, candidate: "Candidate") -> None:
         """Reset a candidate's txn to a neutral state and re-run auto-rules.

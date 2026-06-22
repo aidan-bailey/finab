@@ -202,13 +202,17 @@ class SyncScreen(Container):
         c = self._current_candidate()
         if c is None or self._engine is None:
             return
+        partner_id = getattr(c, "transfer_partner_id", None)
         try:
             self._engine.undo(c.id)
         except ValueError:
-            # Not a decided candidate — no-op + bell.
+            # Not undoable (wrong status / no prior_state / flushed transfer) — bell.
             self.app.bell()
             return
         self._refresh_after_decision(c.id)
+        if partner_id:
+            pl = self.query_one("#sync-pending", PendingList)
+            pl.refresh_row(partner_id)
 
     def action_flush(self) -> None:
         if self._engine is None:
@@ -253,11 +257,18 @@ class SyncScreen(Container):
         self._refresh_after_decision(c.id)
 
     def action_force_transfer(self) -> None:
-        """Open AccountLinkPicker; selected account's transfer_payee_id
-        is passed to engine.apply_transfer."""
+        """On a suggested transfer, confirm the pre-computed pair. Otherwise
+        open the manual account picker (one-sided / undetected transfers)."""
         c = self._current_candidate()
         if c is None or self._engine is None or self._store is None:
             return
+        if c.transfer_role == "keep" and c.auto_reason == "transfer-suggested":
+            self._engine.confirm_transfer_match(c.id)
+            self._refresh_after_decision(c.id)
+            return
+        self._open_force_transfer_picker(c)
+
+    def _open_force_transfer_picker(self, c: Candidate) -> None:
         from finab.tui.widgets.account_link_picker import AccountLinkPicker
         modal = AccountLinkPicker(store=self._store, title="Force transfer to which account?")
 

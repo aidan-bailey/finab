@@ -22,3 +22,9 @@ def test_transfer_merged_glyph():
     c = _c("merged", "transfer-merged")
     assert _glyph_for(c) == "⊝"
     assert _glyph_class_for(c) == "glyph-merged"
+
+
+def test_confirmed_transfer_glyph():
+    c = _c("decided", "transfer-pair")
+    assert _glyph_for(c) == "⇄"
+    assert _glyph_class_for(c) == "glyph-auto-transfer"
