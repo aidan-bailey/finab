@@ -542,8 +542,10 @@ class SyncEngine:
         ynab_categories,
         store,
         tx_store,
+        transfer_match_window_days: int = 1,
     ):
         self._store = store
+        self._tx_store = tx_store
         self._ynab_categories = ynab_categories
 
         # 1. Dedup and sort.
@@ -552,16 +554,52 @@ class SyncEngine:
         )
         merged.sort(key=_sort_key(store))
 
-        # 2. Build Candidate per txn and apply auto-rules.
+        # 2. Transfer pre-pass: claim equal-and-opposite cross-account pairs
+        # BEFORE per-candidate auto-rules (so the inflow side isn't booked
+        # as income by rule (a)).
+        self._match_by_id: dict = {}
+        for mt in match_transfer_pairs(
+            merged, store, window_days=transfer_match_window_days
+        ):
+            self._match_by_id[mt.keep_txn.import_id] = ("keep", mt)
+            self._match_by_id[mt.suppress_txn.import_id] = ("suppress", mt)
+
+        # 3. Build Candidate per txn and apply auto-rules (or transfer match).
         self.candidates: list[Candidate] = [
             self._build_candidate(txn) for txn in merged
         ]
 
     def _build_candidate(self, txn) -> Candidate:
-        """Construct a Candidate around `txn`, then apply auto-rules."""
+        """Construct a Candidate around `txn`. Matched transfers are handled
+        first; otherwise the normal auto-rules apply."""
         candidate = Candidate(id=txn.import_id, txn=txn)
+        entry = self._match_by_id.get(txn.import_id)
+        if entry is not None:
+            self._apply_transfer_match(candidate, *entry)
+            return candidate
         self._apply_auto_rules(candidate)
         return candidate
+
+    def _apply_transfer_match(self, candidate: "Candidate", role: str, mt) -> None:
+        """Configure a candidate that is one side of a matched transfer."""
+        if role == "keep":
+            candidate.txn.payee_id = mt.dest_transfer_payee_id
+            candidate.txn.payee_name = None
+            candidate.txn.category_id = None
+            candidate.txn.subtransactions = []
+            candidate.status = "auto" if mt.confidence == "high" else "pending"
+            candidate.auto_reason = (
+                "transfer-pair" if mt.confidence == "high" else "transfer-suggested"
+            )
+            candidate.transfer_role = "keep"
+            candidate.transfer_partner_id = mt.suppress_txn.import_id
+            candidate.transfer_dest_alias = mt.dest_alias
+        else:  # suppress
+            candidate.status = "merged"
+            candidate.auto_reason = "transfer-merged"
+            candidate.transfer_role = "suppress"
+            candidate.transfer_partner_id = mt.keep_txn.import_id
+            candidate.transfer_dest_alias = mt.dest_alias
 
     def _apply_auto_rules(self, candidate: "Candidate") -> None:
         """Apply inflow/transfer/no-merchant/pre-month/pending rules to an

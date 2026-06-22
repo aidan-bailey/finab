@@ -73,6 +73,7 @@ def _build_txn(
     y, m, d = (int(x) for x in date_str.split("-"))
     return Transaction(
         import_id=fw_uuid,
+        fw_uuid=fw_uuid,
         amount=amount,
         date=date_cls(y, m, d),
         memo=memo,
@@ -717,6 +718,68 @@ class TestApplyHistory:
         engine.undo(c.id)
         assert c.status == "pending"
         assert c.txn.category_id is None
+
+
+class TestTransferMatchingInEngine:
+    def _two_account_store(self, tmp_path):
+        store = ConfigStore(tmp_path / "config.json")
+        store.add_account(
+            alias="Cheque",
+            fw_record={"id": "fw-a", "name": "Cheque", "type": "checking", "balance": 0, "currency_code": "ZAR"},
+            ynab_record={"id": "yn-a", "name": "Cheque", "type": "checking", "balance": 0, "transfer_payee_id": "tp-a"},
+        )
+        store.add_account(
+            alias="Savings",
+            fw_record={"id": "fw-b", "name": "Savings", "type": "savings", "balance": 0, "currency_code": "ZAR"},
+            ynab_record={"id": "yn-b", "name": "Savings", "type": "savings", "balance": 0, "transfer_payee_id": "tp-b"},
+        )
+        return store
+
+    def test_high_confidence_pair_keeps_one_suppresses_other(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-10")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store, tx_store=tx_store,
+        )
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        sup = next(c for c in engine.candidates if c.transfer_role == "suppress")
+        assert keep.status == "auto" and keep.auto_reason == "transfer-pair"
+        assert keep.txn.payee_id == "tp-b" and keep.txn.category_id is None
+        assert keep.transfer_dest_alias == "Savings"
+        assert sup.status == "merged" and sup.auto_reason == "transfer-merged"
+        assert keep.transfer_partner_id == sup.id and sup.transfer_partner_id == keep.id
+
+    def test_inflow_side_not_booked_as_income(self, tmp_path):
+        """Regression: the inflow rule must not claim the suppressed side."""
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-10")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store, tx_store=tx_store,
+        )
+        sup = next(c for c in engine.candidates if c.transfer_role == "suppress")
+        assert sup.auto_reason != "inflow"
+        assert sup.status == "merged"
+
+    def test_low_confidence_pair_is_pending_suggested(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10", merchant_id="x")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-11", merchant_id="y")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[], ynab_categories=[],
+            store=store, tx_store=tx_store, transfer_match_window_days=1,
+        )
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        assert keep.status == "pending" and keep.auto_reason == "transfer-suggested"
+        assert keep.txn.payee_id == "tp-b"
 
 
 class TestNoMerchantAndPreMonthAreBlocked:
