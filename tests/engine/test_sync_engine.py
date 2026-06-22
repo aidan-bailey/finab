@@ -529,6 +529,18 @@ class _FakeYnabClient:
         self.updated.append(list(txns))
 
 
+class _FakeYnabTwin:
+    """Minimal stand-in for a live YNAB transaction as merge_and_filter reads it."""
+    def __init__(self, *, import_id, id, transfer_account_id=None,
+                 category_id=None, subtransactions=None, deleted=False):
+        self.import_id = import_id
+        self.id = id
+        self.transfer_account_id = transfer_account_id
+        self.category_id = category_id
+        self.subtransactions = subtransactions
+        self.deleted = deleted
+
+
 class TestFlush:
     def _setup_engine_with_decisions(self, tmp_path, *, with_existing_ynab_id=False):
         from datetime import date as date_cls
@@ -850,6 +862,55 @@ class TestTransferMatchingInEngine:
         # Suppressed FW uuid now maps to the kept side's import_id.
         assert tx_store.import_id_for("i") == keep.txn.import_id
         assert keep.status == "flushed" and sup.status == "flushed"
+
+    def test_categorizing_suggested_transfer_dissolves_pair(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10", merchant_id="x")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-11", merchant_id="y")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store, tx_store=tx_store, transfer_match_window_days=1,
+        )
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        sup = next(c for c in engine.candidates if c.transfer_role == "suppress")
+        engine.apply_category(keep.id, category_id="cat-rta")
+        # Pair dissolved.
+        assert keep.transfer_role is None and sup.transfer_role is None
+        assert keep.status == "decided" and str(keep.txn.category_id) == "cat-rta"
+        # Keep side no longer carries the transfer payee.
+        assert keep.txn.payee_id != "tp-b"
+        # Partner restored to a normal candidate (positive amount → inflow auto).
+        assert sup.status == "auto" and sup.auto_reason == "inflow"
+        # Flush must NOT suppress the partner now.
+        client = _FakeYnabClient()
+        engine.flush(client, budget_id="bid")
+        assert tx_store.import_id_for("i") != keep.txn.import_id
+
+    def test_suppressed_side_skipped_on_next_sync(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-10")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store, tx_store=tx_store,
+        )
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        engine.flush(_FakeYnabClient(), budget_id="bid")
+        kept_import_id = keep.txn.import_id
+
+        # Next sync: YNAB now holds the kept transfer (transfer_account_id set);
+        # FinWise returns both original sides again (fresh objects).
+        from finab.transactions import merge_and_filter_transactions
+        twin = _FakeYnabTwin(import_id=kept_import_id, id="ynab-keep", transfer_account_id="yn-b")
+        out2 = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10")
+        inn2 = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-10")
+        result = merge_and_filter_transactions([out2, inn2], [twin], store, tx_store)
+        # Both FW sides resolve to the kept transfer twin → skipped (no re-import).
+        assert result == []
 
     def test_suppressed_partner_recorded_before_a_failing_update_batch(self, tmp_path):
         store = self._two_account_store(tmp_path)

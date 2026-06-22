@@ -701,6 +701,8 @@ class SyncEngine:
         Memory update is by-design last-write-wins per (merchant, amount).
         """
         c = self._candidate(candidate_id)
+        if c.transfer_role in ("keep", "suppress"):
+            self._undo_transfer(c)
         c.prior_state = self._snapshot(c.txn)
         c.txn.category_id = category_id
         c.txn.subtransactions = []
@@ -728,6 +730,8 @@ class SyncEngine:
         here lets the UI catch mistakes before flush.
         """
         c = self._candidate(candidate_id)
+        if c.transfer_role in ("keep", "suppress"):
+            self._undo_transfer(c)
         total = sum(s["amount"] for s in splits)
         if total != c.txn.amount:
             raise ValueError(
@@ -762,6 +766,8 @@ class SyncEngine:
         Does NOT update merchant memory — transfers aren't categorizations.
         """
         c = self._candidate(candidate_id)
+        if c.transfer_role in ("keep", "suppress"):
+            self._undo_transfer(c)
         c.prior_state = self._snapshot(c.txn)
         c.txn.payee_id = transfer_payee_id
         c.txn.payee_name = None
@@ -789,6 +795,8 @@ class SyncEngine:
         categorization for that amount).
         """
         c = self._candidate(candidate_id)
+        if c.transfer_role in ("keep", "suppress"):
+            self._undo_transfer(c)
         c.prior_state = self._snapshot(c.txn)
         _apply_processing_to_txn(entry, c.txn)
         merchant = self._store.merchant_by_finwise_id(

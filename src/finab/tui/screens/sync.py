@@ -145,8 +145,11 @@ class SyncScreen(Container):
         def _on_picked(category_id):
             if category_id is None:
                 return
+            partner_id = getattr(c, "transfer_partner_id", None)
             self._engine.apply_category(c.id, category_id=category_id)
             self._refresh_after_decision(c.id)
+            if partner_id:
+                self.query_one("#sync-pending", PendingList).refresh_row(partner_id)
 
         self.app.push_screen(modal, callback=_on_picked)
 
@@ -169,8 +172,11 @@ class SyncScreen(Container):
         def _on_done(splits):
             if splits is None:
                 return
+            partner_id = getattr(c, "transfer_partner_id", None)
             self._engine.apply_split(c.id, splits=splits)
             self._refresh_after_decision(c.id)
+            if partner_id:
+                self.query_one("#sync-pending", PendingList).refresh_row(partner_id)
 
         self.app.push_screen(modal, callback=_on_done)
 
@@ -193,8 +199,11 @@ class SyncScreen(Container):
             if result is None:
                 return
             _amount_key, entry = result
+            partner_id = getattr(c, "transfer_partner_id", None)
             self._engine.apply_history(c.id, entry=entry)
             self._refresh_after_decision(c.id)
+            if partner_id:
+                self.query_one("#sync-pending", PendingList).refresh_row(partner_id)
 
         self.app.push_screen(modal, callback=_on_picked)
 
@@ -253,8 +262,11 @@ class SyncScreen(Container):
             self.app.bell()
             return
         _, entry = closest
+        partner_id = getattr(c, "transfer_partner_id", None)
         self._engine.apply_history(c.id, entry=entry)
         self._refresh_after_decision(c.id)
+        if partner_id:
+            self.query_one("#sync-pending", PendingList).refresh_row(partner_id)
 
     def action_force_transfer(self) -> None:
         """On a suggested transfer, confirm the pre-computed pair. Otherwise
@@ -275,8 +287,11 @@ class SyncScreen(Container):
         def _on_picked(transfer_payee_id):
             if transfer_payee_id is None:
                 return
+            partner_id = getattr(c, "transfer_partner_id", None)
             self._engine.apply_transfer(c.id, transfer_payee_id=transfer_payee_id)
             self._refresh_after_decision(c.id)
+            if partner_id:
+                self.query_one("#sync-pending", PendingList).refresh_row(partner_id)
 
         self.app.push_screen(modal, callback=_on_picked)
 
