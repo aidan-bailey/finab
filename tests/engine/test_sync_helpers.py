@@ -51,3 +51,18 @@ def test_helpers_still_importable_from_transactions():
     )
     assert _INFLOW_CATEGORY_NAMES
     assert _TRACKING_ACCOUNT_TYPES
+
+
+def test_from_finwise_sets_fw_uuid_to_source_id():
+    from finab.models import FinWiseTransaction, Transaction
+
+    raw = {
+        "id": "fw-abc", "createdAt": "2026-01-01T00:00:00Z",
+        "updatedAt": "2026-01-01T00:00:00Z", "description": "x",
+        "accountId": "acc-1", "amount": {"amount": 5, "currencyCode": "ZAR"},
+        "date": "2026-01-01T00:00:00Z", "merchantId": "m-1",
+        "userId": "u-1", "needsReview": False,
+    }
+    txn = Transaction.from_finwise(FinWiseTransaction.model_validate(raw))
+    assert txn.fw_uuid == "fw-abc"
+    assert txn.import_id == "fw-abc"   # unchanged: still seeds import_id too
