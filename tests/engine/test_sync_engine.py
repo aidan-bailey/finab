@@ -30,6 +30,22 @@ class TestCandidate:
         assert c.status == "auto"
         assert c.auto_reason == "inflow"
 
+    def test_candidate_has_transfer_fields_defaulting_none(self):
+        c = Candidate(id="x", txn=object())
+        assert c.transfer_partner_id is None
+        assert c.transfer_role is None
+        assert c.transfer_dest_alias is None
+
+    def test_candidate_accepts_merged_status_and_transfer_reason(self):
+        c = Candidate(
+            id="x", txn=object(), status="merged",
+            auto_reason="transfer-merged", transfer_role="suppress",
+            transfer_partner_id="y", transfer_dest_alias="Savings",
+        )
+        assert c.status == "merged"
+        assert c.auto_reason == "transfer-merged"
+        assert c.transfer_role == "suppress"
+
 
 class _FakeCategory:
     """Minimal stub matching the YNAB SDK Category shape used by

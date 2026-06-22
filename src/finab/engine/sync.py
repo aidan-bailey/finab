@@ -401,16 +401,20 @@ def _sort_key(store: "ConfigStore"):
     return key
 
 
-CandidateStatus = Literal["pending", "auto", "decided", "flushed"]
+CandidateStatus = Literal["pending", "auto", "decided", "flushed", "merged"]
 """
 pending  — needs user input
-auto     — engine auto-applied (inflow/transfer only after this change)
-decided  — user applied a category/split/transfer
+auto     — engine auto-applied (inflow/transfer/transfer-pair)
+decided  — user applied a category/split/transfer (incl. confirmed suggestion)
 flushed  — pushed to YNAB
+merged   — suppressed counterpart of a matched transfer; never pushed
 """
 
 
-AutoReason = Literal["inflow", "transfer", "no-merchant", "pre-month"]
+AutoReason = Literal[
+    "inflow", "transfer", "no-merchant", "pre-month",
+    "transfer-pair", "transfer-suggested", "transfer-merged",
+]
 
 
 @dataclass
@@ -433,6 +437,9 @@ class Candidate:
     # restore the pre-decision state. None on pending or auto candidates.
     prior_state: Optional[dict] = None
     warnings: list = field(default_factory=list)
+    transfer_partner_id: Optional[str] = None
+    transfer_role: Optional[Literal["keep", "suppress"]] = None
+    transfer_dest_alias: Optional[str] = None
 
 
 class SyncEngine:
