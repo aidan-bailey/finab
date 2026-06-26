@@ -27,6 +27,7 @@ _STATUS_LABELS = {
     "decided": "DECIDED",
     "auto": "AUTO",
     "flushed": "FLUSHED",
+    "merged": "MERGED",
 }
 
 
@@ -92,6 +93,7 @@ class TransactionCard(Container):
     #card-status.status-auto { color: $secondary; }
     #card-status.status-flushed { color: $text-muted; }
     #card-status.status-warning { color: $warning; }
+    #card-status.status-merged { color: $text-muted; }
 
     #card-meta {
         color: $text-muted;
@@ -114,6 +116,14 @@ class TransactionCard(Container):
 
     def on_mount(self) -> None:
         self.add_class("empty")
+
+    def _status_label(self, candidate: Candidate) -> str:
+        label = _STATUS_LABELS.get(candidate.status, candidate.status.upper())
+        if candidate.auto_reason:
+            label = f"{label} · {candidate.auto_reason.upper()}"
+        if candidate.transfer_dest_alias:
+            label = f"{label} ↦ {candidate.transfer_dest_alias}"
+        return label
 
     def set_candidate(
         self,
@@ -150,11 +160,9 @@ class TransactionCard(Container):
 
         # Status badge.
         status_widget = self.query_one("#card-status", Static)
-        label = _STATUS_LABELS.get(candidate.status, candidate.status.upper())
-        if candidate.auto_reason:
-            label = f"{label} · {candidate.auto_reason.upper()}"
-        status_widget.update(label)
-        for cls in ("status-pending", "status-decided", "status-auto", "status-flushed", "status-warning"):
+        status_widget.update(self._status_label(candidate))
+        for cls in ("status-pending", "status-decided", "status-auto",
+                    "status-flushed", "status-warning", "status-merged"):
             status_widget.remove_class(cls)
         if candidate.warnings:
             status_widget.add_class("status-warning")

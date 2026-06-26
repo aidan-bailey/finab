@@ -32,6 +32,7 @@ class SettingsScreen(Container):
         yield Static("", id="settings-budget")
         yield Static("", id="settings-creds")
         yield Static("", id="settings-paths")
+        yield Static("", id="settings-transfer")
 
     def on_mount(self) -> None:
         self._update_content()
@@ -60,4 +61,10 @@ class SettingsScreen(Container):
             f"  State files:\n"
             f"    config.json:        {Path(store_mod.CONFIG_FILE).resolve()}\n"
             f"    transactions.json:  {Path(txn_mod.TRANSACTIONS_FILE).resolve()}"
+        )
+
+        from finab.config import load_transfer_match_window_days
+        self.query_one("#settings-transfer", Static).update(
+            f"  Transfer match window: ±{load_transfer_match_window_days()} day(s)"
+            f"  (edit transfer_match_window_days in config.json)"
         )

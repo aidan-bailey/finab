@@ -22,6 +22,7 @@ _GLYPHS = {
     ("pending", "no-merchant"): "✗",
     ("pending", "pre-month"): "↷",
     ("decided", None): "✓",
+    ("decided", "transfer-pair"): "⇄",
     ("auto", "inflow"): "+",
     ("auto", "transfer"): "→",
     # ("auto", "no-merchant") and ("auto", "pre-month") are no longer produced
@@ -29,6 +30,10 @@ _GLYPHS = {
     # future change re-enables them.
     ("auto", "no-merchant"): "✗",
     ("auto", "pre-month"): "↷",
+    ("auto", "transfer-pair"): "⇄",
+    ("pending", "transfer-suggested"): "⇄",
+    ("merged", "transfer-merged"): "⊝",
+    ("merged", None): "⊝",
     ("flushed", None): "⇡",
 }
 
@@ -37,10 +42,15 @@ _GLYPH_CSS_CLASS = {
     ("pending", "no-merchant"): "glyph-no-merchant",
     ("pending", "pre-month"): "glyph-pre-month",
     ("decided", None): "glyph-decided",
+    ("decided", "transfer-pair"): "glyph-auto-transfer",
     ("auto", "inflow"): "glyph-auto-inflow",
     ("auto", "transfer"): "glyph-auto-transfer",
     ("auto", "no-merchant"): "glyph-no-merchant",
     ("auto", "pre-month"): "glyph-pre-month",
+    ("auto", "transfer-pair"): "glyph-auto-transfer",
+    ("pending", "transfer-suggested"): "glyph-transfer-suggested",
+    ("merged", "transfer-merged"): "glyph-merged",
+    ("merged", None): "glyph-merged",
     ("flushed", None): "glyph-flushed",
 }
 

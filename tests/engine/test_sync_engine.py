@@ -30,6 +30,22 @@ class TestCandidate:
         assert c.status == "auto"
         assert c.auto_reason == "inflow"
 
+    def test_candidate_has_transfer_fields_defaulting_none(self):
+        c = Candidate(id="x", txn=object())
+        assert c.transfer_partner_id is None
+        assert c.transfer_role is None
+        assert c.transfer_dest_alias is None
+
+    def test_candidate_accepts_merged_status_and_transfer_reason(self):
+        c = Candidate(
+            id="x", txn=object(), status="merged",
+            auto_reason="transfer-merged", transfer_role="suppress",
+            transfer_partner_id="y", transfer_dest_alias="Savings",
+        )
+        assert c.status == "merged"
+        assert c.auto_reason == "transfer-merged"
+        assert c.transfer_role == "suppress"
+
 
 class _FakeCategory:
     """Minimal stub matching the YNAB SDK Category shape used by
@@ -57,6 +73,7 @@ def _build_txn(
     y, m, d = (int(x) for x in date_str.split("-"))
     return Transaction(
         import_id=fw_uuid,
+        fw_uuid=fw_uuid,
         amount=amount,
         date=date_cls(y, m, d),
         memo=memo,
@@ -512,6 +529,18 @@ class _FakeYnabClient:
         self.updated.append(list(txns))
 
 
+class _FakeYnabTwin:
+    """Minimal stand-in for a live YNAB transaction as merge_and_filter reads it."""
+    def __init__(self, *, import_id, id, transfer_account_id=None,
+                 category_id=None, subtransactions=None, deleted=False):
+        self.import_id = import_id
+        self.id = id
+        self.transfer_account_id = transfer_account_id
+        self.category_id = category_id
+        self.subtransactions = subtransactions
+        self.deleted = deleted
+
+
 class TestFlush:
     def _setup_engine_with_decisions(self, tmp_path, *, with_existing_ynab_id=False):
         from datetime import date as date_cls
@@ -701,6 +730,213 @@ class TestApplyHistory:
         engine.undo(c.id)
         assert c.status == "pending"
         assert c.txn.category_id is None
+
+
+class TestTransferMatchingInEngine:
+    def _two_account_store(self, tmp_path):
+        store = ConfigStore(tmp_path / "config.json")
+        store.add_account(
+            alias="Cheque",
+            fw_record={"id": "fw-a", "name": "Cheque", "type": "checking", "balance": 0, "currency_code": "ZAR"},
+            ynab_record={"id": "yn-a", "name": "Cheque", "type": "checking", "balance": 0, "transfer_payee_id": "tp-a"},
+        )
+        store.add_account(
+            alias="Savings",
+            fw_record={"id": "fw-b", "name": "Savings", "type": "savings", "balance": 0, "currency_code": "ZAR"},
+            ynab_record={"id": "yn-b", "name": "Savings", "type": "savings", "balance": 0, "transfer_payee_id": "tp-b"},
+        )
+        return store
+
+    def test_high_confidence_pair_keeps_one_suppresses_other(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-10")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store, tx_store=tx_store,
+        )
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        sup = next(c for c in engine.candidates if c.transfer_role == "suppress")
+        assert keep.status == "auto" and keep.auto_reason == "transfer-pair"
+        assert keep.txn.payee_id == "tp-b" and keep.txn.category_id is None
+        assert keep.transfer_dest_alias == "Savings"
+        assert sup.status == "merged" and sup.auto_reason == "transfer-merged"
+        assert keep.transfer_partner_id == sup.id and sup.transfer_partner_id == keep.id
+
+    def test_inflow_side_not_booked_as_income(self, tmp_path):
+        """Regression: the inflow rule must not claim the suppressed side."""
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-10")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store, tx_store=tx_store,
+        )
+        sup = next(c for c in engine.candidates if c.transfer_role == "suppress")
+        assert sup.auto_reason != "inflow"
+        assert sup.status == "merged"
+
+    def test_low_confidence_pair_is_pending_suggested(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10", merchant_id="x")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-11", merchant_id="y")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[], ynab_categories=[],
+            store=store, tx_store=tx_store, transfer_match_window_days=1,
+        )
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        assert keep.status == "pending" and keep.auto_reason == "transfer-suggested"
+        assert keep.txn.payee_id == "tp-b"
+
+    def test_confirm_suggested_transfer_marks_decided(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10", merchant_id="x")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-11", merchant_id="y")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[], ynab_categories=[],
+            store=store, tx_store=tx_store, transfer_match_window_days=1,
+        )
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        engine.confirm_transfer_match(keep.id)
+        assert keep.status == "decided"
+        assert keep.txn.payee_id == "tp-b"
+
+    def test_undo_transfer_reverts_both_sides(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-10")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store, tx_store=tx_store,
+        )
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        sup = next(c for c in engine.candidates if c.transfer_role == "suppress")
+        engine.undo(keep.id)
+        # Both lose their transfer role; suppress side re-enters normal rules.
+        assert keep.transfer_role is None and sup.transfer_role is None
+        assert keep.status == "pending"          # outflow, no merchant → no-merchant
+        assert sup.status == "auto" and sup.auto_reason == "inflow"   # inflow reclaimed
+
+    def test_undo_transfer_from_suppress_side_reverts_both(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-10")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store, tx_store=tx_store,
+        )
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        sup = next(c for c in engine.candidates if c.transfer_role == "suppress")
+        engine.undo(sup.id)   # undo triggered from the suppressed (inflow) side
+        assert keep.transfer_role is None and sup.transfer_role is None
+        assert keep.status == "pending"
+        assert sup.status == "auto" and sup.auto_reason == "inflow"
+
+    def test_flush_records_suppressed_side_and_marks_flushed(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-10")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store, tx_store=tx_store,
+        )
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        sup = next(c for c in engine.candidates if c.transfer_role == "suppress")
+        client = _FakeYnabClient()
+        engine.flush(client, budget_id="bid")
+        # Only the keep side was pushed (one create); suppressed side never sent.
+        assert len(client.created) == 1 and len(client.created[0]) == 1
+        assert client.created[0][0] is keep.txn
+        # Suppressed FW uuid now maps to the kept side's import_id.
+        assert tx_store.import_id_for("i") == keep.txn.import_id
+        assert keep.status == "flushed" and sup.status == "flushed"
+
+    def test_categorizing_suggested_transfer_dissolves_pair(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10", merchant_id="x")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-11", merchant_id="y")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store, tx_store=tx_store, transfer_match_window_days=1,
+        )
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        sup = next(c for c in engine.candidates if c.transfer_role == "suppress")
+        engine.apply_category(keep.id, category_id="cat-rta")
+        # Pair dissolved.
+        assert keep.transfer_role is None and sup.transfer_role is None
+        assert keep.status == "decided" and str(keep.txn.category_id) == "cat-rta"
+        # Keep side no longer carries the transfer payee.
+        assert keep.txn.payee_id != "tp-b"
+        # Partner restored to a normal candidate (positive amount → inflow auto).
+        assert sup.status == "auto" and sup.auto_reason == "inflow"
+        # Flush must NOT suppress the partner now.
+        client = _FakeYnabClient()
+        engine.flush(client, budget_id="bid")
+        assert tx_store.import_id_for("i") != keep.txn.import_id
+
+    def test_suppressed_side_skipped_on_next_sync(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-10")
+        engine = SyncEngine(
+            fw_transactions=[out, inn], ynab_transactions=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store, tx_store=tx_store,
+        )
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        engine.flush(_FakeYnabClient(), budget_id="bid")
+        kept_import_id = keep.txn.import_id
+
+        # Next sync: YNAB now holds the kept transfer (transfer_account_id set);
+        # FinWise returns both original sides again (fresh objects).
+        from finab.transactions import merge_and_filter_transactions
+        twin = _FakeYnabTwin(import_id=kept_import_id, id="ynab-keep", transfer_account_id="yn-b")
+        out2 = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10")
+        inn2 = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-10")
+        result = merge_and_filter_transactions([out2, inn2], [twin], store, tx_store)
+        # Both FW sides resolve to the kept transfer twin → skipped (no re-import).
+        assert result == []
+
+    def test_suppressed_partner_recorded_before_a_failing_update_batch(self, tmp_path):
+        store = self._two_account_store(tmp_path)
+        tx_store = TransactionsStore(tmp_path / "transactions.json")
+        out = _build_txn(fw_uuid="o", amount=-50000, account_id="fw-a", date_str="2026-05-10")
+        inn = _build_txn(fw_uuid="i", amount=50000, account_id="fw-b", date_str="2026-05-10")
+        # A separate non-transfer txn forced onto the UPDATE path (pre-set ynab_id).
+        upd = _build_txn(fw_uuid="u", amount=-1234, account_id="fw-a", date_str="2026-05-10")
+        upd.ynab_id = "yn-existing-1"
+        engine = SyncEngine(
+            fw_transactions=[out, inn, upd], ynab_transactions=[],
+            ynab_categories=[_FakeCategory("cat-rta", "Inflow: Ready to Assign")],
+            store=store, tx_store=tx_store,
+        )
+        upd_c = next(c for c in engine.candidates if c.txn.fw_uuid == "u")
+        engine.apply_category(upd_c.id, category_id="cat-x")
+        keep = next(c for c in engine.candidates if c.transfer_role == "keep")
+        sup = next(c for c in engine.candidates if c.transfer_role == "suppress")
+        client = _FakeYnabClient(fail_on="update")
+        with pytest.raises(RuntimeError, match="simulated"):
+            engine.flush(client, budget_id="bid")
+        # Creates batch (transfer keep) succeeded and its partner was recorded
+        # BEFORE the failing update batch — so no duplicate on the next sync.
+        assert keep.status == "flushed"
+        assert sup.status == "flushed"
+        assert tx_store.import_id_for("i") == keep.txn.import_id
 
 
 class TestNoMerchantAndPreMonthAreBlocked:

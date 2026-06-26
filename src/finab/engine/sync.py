@@ -401,16 +401,99 @@ def _sort_key(store: "ConfigStore"):
     return key
 
 
-CandidateStatus = Literal["pending", "auto", "decided", "flushed"]
+@dataclass
+class TransferMatch:
+    """One detected transfer pair. keep_txn (the outflow) is pushed to YNAB
+    with payee = dest_transfer_payee_id; YNAB auto-creates the mirror in the
+    destination account, so suppress_txn (the inflow) is not pushed."""
+    keep_txn: Any
+    suppress_txn: Any
+    dest_transfer_payee_id: str
+    dest_alias: str
+    confidence: str  # "high" | "low"
+
+
+def _dest_transfer_payee(store, ynab_account_id):
+    """(transfer_payee_id, alias) for a YNAB account id, or (None, None)."""
+    if not ynab_account_id:
+        return None, None
+    acc = store.account_by_ynab_id(ynab_account_id)
+    if not acc:
+        return None, None
+    ynab = acc.get("ynab") or {}
+    return ynab.get("transfer_payee_id"), acc.get("alias")
+
+
+def match_transfer_pairs(txns, store, *, window_days=1):
+    """Pair equal-and-opposite cross-account transactions into transfers.
+
+    Runs on the post-dedup batch (account_id already remapped to the YNAB
+    account id). Pools CREATES ONLY (no ynab_id) so we never suppress a txn
+    already on YNAB. Each transaction is used in at most one pair. Returns a
+    list of TransferMatch.
+
+    Confidence: HIGH iff there was exactly one viable partner AND (same day OR
+    the two sides share a merchant_id); LOW otherwise.
+    """
+    pool = [t for t in txns
+            if not getattr(t, "ynab_id", None) and getattr(t, "amount", 0)]
+    by_amount: dict = {}
+    for t in pool:
+        if t.amount > 0:
+            by_amount.setdefault(t.amount, []).append(t)
+    outflows = sorted(
+        [t for t in pool if t.amount < 0],
+        key=lambda t: (t.date, str(t.import_id)),
+    )
+
+    used: set = set()
+    matches: list = []
+    for out in outflows:
+        viable = []  # (inflow, dest_tp, dest_alias)
+        for cand in by_amount.get(-out.amount, []):
+            if id(cand) in used or cand.account_id == out.account_id:
+                continue
+            if abs((cand.date - out.date).days) > window_days:
+                continue
+            dest_tp, dest_alias = _dest_transfer_payee(store, cand.account_id)
+            if dest_tp:
+                viable.append((cand, dest_tp, dest_alias))
+        if not viable:
+            continue
+
+        def _rank(item):
+            cand = item[0]
+            shared = bool(out.merchant_id and out.merchant_id == cand.merchant_id)
+            return (0 if shared else 1, abs((cand.date - out.date).days), str(cand.import_id))
+
+        viable.sort(key=_rank)
+        best, dest_tp, dest_alias = viable[0]
+        used.add(id(best))
+        shared_merchant = bool(out.merchant_id and out.merchant_id == best.merchant_id)
+        same_day = best.date == out.date
+        confidence = "high" if (len(viable) == 1 and (same_day or shared_merchant)) else "low"
+        matches.append(TransferMatch(
+            keep_txn=out, suppress_txn=best,
+            dest_transfer_payee_id=dest_tp, dest_alias=dest_alias or "?",
+            confidence=confidence,
+        ))
+    return matches
+
+
+CandidateStatus = Literal["pending", "auto", "decided", "flushed", "merged"]
 """
 pending  — needs user input
-auto     — engine auto-applied (inflow/transfer only after this change)
-decided  — user applied a category/split/transfer
+auto     — engine auto-applied (inflow/transfer/transfer-pair)
+decided  — user applied a category/split/transfer (incl. confirmed suggestion)
 flushed  — pushed to YNAB
+merged   — suppressed counterpart of a matched transfer; never pushed
 """
 
 
-AutoReason = Literal["inflow", "transfer", "no-merchant", "pre-month"]
+AutoReason = Literal[
+    "inflow", "transfer", "no-merchant", "pre-month",
+    "transfer-pair", "transfer-suggested", "transfer-merged",
+]
 
 
 @dataclass
@@ -433,6 +516,9 @@ class Candidate:
     # restore the pre-decision state. None on pending or auto candidates.
     prior_state: Optional[dict] = None
     warnings: list = field(default_factory=list)
+    transfer_partner_id: Optional[str] = None
+    transfer_role: Optional[Literal["keep", "suppress"]] = None
+    transfer_dest_alias: Optional[str] = None
 
 
 class SyncEngine:
@@ -456,8 +542,10 @@ class SyncEngine:
         ynab_categories,
         store,
         tx_store,
+        transfer_match_window_days: int = 1,
     ):
         self._store = store
+        self._tx_store = tx_store
         self._ynab_categories = ynab_categories
 
         # 1. Dedup and sort.
@@ -466,25 +554,58 @@ class SyncEngine:
         )
         merged.sort(key=_sort_key(store))
 
-        # 2. Build Candidate per txn and apply auto-rules.
+        # 2. Transfer pre-pass: claim equal-and-opposite cross-account pairs
+        # BEFORE per-candidate auto-rules (so the inflow side isn't booked
+        # as income by rule (a)).
+        self._match_by_id: dict = {}
+        for mt in match_transfer_pairs(
+            merged, store, window_days=transfer_match_window_days
+        ):
+            self._match_by_id[mt.keep_txn.import_id] = ("keep", mt)
+            self._match_by_id[mt.suppress_txn.import_id] = ("suppress", mt)
+
+        # 3. Build Candidate per txn and apply auto-rules (or transfer match).
         self.candidates: list[Candidate] = [
             self._build_candidate(txn) for txn in merged
         ]
 
     def _build_candidate(self, txn) -> Candidate:
-        """Construct a Candidate around `txn` and apply auto-rules.
+        """Construct a Candidate around `txn`. Matched transfers are handled
+        first; otherwise the normal auto-rules apply."""
+        candidate = Candidate(id=txn.import_id, txn=txn)
+        entry = self._match_by_id.get(txn.import_id)
+        if entry is not None:
+            self._apply_transfer_match(candidate, *entry)
+            return candidate
+        self._apply_auto_rules(candidate)
+        return candidate
 
-        Auto-rules (status="auto"), in priority order:
-          (a) inflow: positive amount + inflow category exists
-          (b) transfer: txn's merchant links to an account's transfer payee
-        Blocked paths (status="pending", auto_reason set for UI glyph):
-          (c) no-merchant: no merchant resolvable  → pending/"no-merchant"
-          (d) pre-month: txn dated before first of current month  → pending/"pre-month"
-        Otherwise: status = pending (user must decide).
-        """
-        # `txn.import_id` is now our durable id (set by merge_and_filter_transactions).
-        cid = txn.import_id
-        candidate = Candidate(id=cid, txn=txn)
+    def _apply_transfer_match(self, candidate: "Candidate", role: str, mt) -> None:
+        """Configure a candidate that is one side of a matched transfer."""
+        if role == "keep":
+            candidate.txn.payee_id = mt.dest_transfer_payee_id
+            candidate.txn.payee_name = None
+            candidate.txn.category_id = None
+            candidate.txn.subtransactions = []
+            candidate.status = "auto" if mt.confidence == "high" else "pending"
+            candidate.auto_reason = (
+                "transfer-pair" if mt.confidence == "high" else "transfer-suggested"
+            )
+            candidate.transfer_role = "keep"
+            candidate.transfer_partner_id = mt.suppress_txn.import_id
+            candidate.transfer_dest_alias = mt.dest_alias
+        else:  # suppress
+            candidate.status = "merged"
+            candidate.auto_reason = "transfer-merged"
+            candidate.transfer_role = "suppress"
+            candidate.transfer_partner_id = mt.keep_txn.import_id
+            candidate.transfer_dest_alias = mt.dest_alias
+
+    def _apply_auto_rules(self, candidate: "Candidate") -> None:
+        """Apply inflow/transfer/no-merchant/pre-month/pending rules to an
+        existing candidate, mutating its txn + status + auto_reason in place.
+        (Extracted verbatim from the original _build_candidate body.)"""
+        txn = candidate.txn
 
         # (a) Inflow
         if _is_inflow(txn):
@@ -494,16 +615,14 @@ class SyncEngine:
                 txn.subtransactions = []
                 candidate.status = "auto"
                 candidate.auto_reason = "inflow"
-                return candidate
-            # No inflow category — fall through to merchant logic
-            # (matches today's _process_one_transaction).
+                return
 
         merchant = None
         fw_mid = getattr(txn, "merchant_id", None)
         if fw_mid:
             merchant = self._store.merchant_by_finwise_id(fw_mid)
 
-        # (b) Transfer
+        # (b) Transfer (merchant linked to an account transfer payee)
         if _is_transfer(merchant):
             txn.payee_id = merchant["ynab"]["id"]
             txn.payee_name = None
@@ -511,13 +630,9 @@ class SyncEngine:
             txn.subtransactions = []
             candidate.status = "auto"
             candidate.auto_reason = "transfer"
-            return candidate
+            return
 
         # (b2) Warning: FW says transfer but merchant isn't a transfer payee.
-        # We still flow through to the normal auto/pending paths — this
-        # transaction will be pushed without a transfer payee linkage,
-        # which is wrong but recoverable. Surface a warning so the user
-        # can fix the merchant linkage later.
         if getattr(txn, "is_transfer", False):
             if merchant:
                 candidate.warnings.append(
@@ -531,17 +646,15 @@ class SyncEngine:
                     "linked. It will push without a transfer payee."
                 )
 
-        # (c) No merchant — DON'T auto-push (user must act). status=pending so
-        # flush() skips this, but auto_reason stays set so the UI can render ✗.
+        # (c) No merchant
         if not merchant:
             txn.category_id = None
             txn.subtransactions = []
             candidate.status = "pending"
             candidate.auto_reason = "no-merchant"
-            return candidate
+            return
 
-        # (d) Before current month — same treatment: keep merchant linkage but
-        # don't push without categorization. status=pending so flush() skips.
+        # (d) Before current month
         if _is_before_current_month(txn):
             txn.payee_id = merchant["ynab"].get("id")
             txn.payee_name = None
@@ -549,13 +662,11 @@ class SyncEngine:
             txn.subtransactions = []
             candidate.status = "pending"
             candidate.auto_reason = "pre-month"
-            return candidate
+            return
 
-        # Default: pending — user must decide. We still set the payee from
-        # the merchant since that's not a decision the user makes.
+        # Default: pending, payee set from merchant.
         txn.payee_id = merchant["ynab"].get("id")
         txn.payee_name = None
-        return candidate
 
     def _candidate(self, candidate_id: str) -> "Candidate":
         """Look up a candidate by id. Raises KeyError if not found."""
@@ -590,6 +701,8 @@ class SyncEngine:
         Memory update is by-design last-write-wins per (merchant, amount).
         """
         c = self._candidate(candidate_id)
+        if c.transfer_role in ("keep", "suppress"):
+            self._undo_transfer(c)
         c.prior_state = self._snapshot(c.txn)
         c.txn.category_id = category_id
         c.txn.subtransactions = []
@@ -617,6 +730,8 @@ class SyncEngine:
         here lets the UI catch mistakes before flush.
         """
         c = self._candidate(candidate_id)
+        if c.transfer_role in ("keep", "suppress"):
+            self._undo_transfer(c)
         total = sum(s["amount"] for s in splits)
         if total != c.txn.amount:
             raise ValueError(
@@ -651,6 +766,8 @@ class SyncEngine:
         Does NOT update merchant memory — transfers aren't categorizations.
         """
         c = self._candidate(candidate_id)
+        if c.transfer_role in ("keep", "suppress"):
+            self._undo_transfer(c)
         c.prior_state = self._snapshot(c.txn)
         c.txn.payee_id = transfer_payee_id
         c.txn.payee_name = None
@@ -678,6 +795,8 @@ class SyncEngine:
         categorization for that amount).
         """
         c = self._candidate(candidate_id)
+        if c.transfer_role in ("keep", "suppress"):
+            self._undo_transfer(c)
         c.prior_state = self._snapshot(c.txn)
         _apply_processing_to_txn(entry, c.txn)
         merchant = self._store.merchant_by_finwise_id(
@@ -687,12 +806,59 @@ class SyncEngine:
             _update_merchant_memory(self._store, merchant, c.txn)
         c.status = "decided"
 
+    def confirm_transfer_match(self, candidate_id: str) -> None:
+        """Accept a low-confidence suggested transfer: pending -> decided.
+        The txn's transfer payee was already set at build time."""
+        c = self._candidate(candidate_id)
+        if (
+            c.status != "pending"
+            or c.transfer_role != "keep"
+            or c.auto_reason != "transfer-suggested"
+        ):
+            raise ValueError(
+                f"candidate {candidate_id!r} is not a pending suggested transfer"
+            )
+        c.prior_state = self._snapshot(c.txn)
+        c.status = "decided"
+        c.auto_reason = "transfer-pair"   # confirmed: no longer merely "suggested"
+
+    def _reevaluate(self, candidate: "Candidate") -> None:
+        """Reset a candidate's txn to a neutral state and re-run auto-rules.
+        Used after un-matching a transfer."""
+        candidate.txn.payee_id = None
+        candidate.txn.payee_name = None
+        candidate.txn.category_id = None
+        candidate.txn.subtransactions = []
+        candidate.status = "pending"
+        candidate.auto_reason = None
+        candidate.warnings = []
+        self._apply_auto_rules(candidate)
+
+    def _undo_transfer(self, c: "Candidate") -> None:
+        """Revert a matched transfer (either side): drop the match and
+        re-evaluate both sides as normal candidates."""
+        keep = c if c.transfer_role == "keep" else self._candidate(c.transfer_partner_id)
+        suppress = self._candidate(keep.transfer_partner_id)
+        if keep.status == "flushed" or suppress.status == "flushed":
+            raise ValueError("cannot undo a flushed transfer")
+        self._match_by_id.pop(keep.txn.import_id, None)
+        self._match_by_id.pop(suppress.txn.import_id, None)
+        for cand in (keep, suppress):
+            cand.transfer_role = None
+            cand.transfer_partner_id = None
+            cand.transfer_dest_alias = None
+            cand.prior_state = None
+            self._reevaluate(cand)
+
     def undo(self, candidate_id: str) -> None:
         """Revert a user decision: status decided -> pending, restore
         snapshotted fields on txn. Does NOT revert merchant memory
         (last-write-wins by amount; an undo+re-decide just overwrites).
         """
         c = self._candidate(candidate_id)
+        if c.transfer_role in ("keep", "suppress"):
+            self._undo_transfer(c)
+            return
         if c.status != "decided":
             raise ValueError(
                 f"cannot undo candidate with status {c.status!r}; "
@@ -734,7 +900,22 @@ class SyncEngine:
             ynab_client.create_transactions(budget_id, [c.txn for c in creates])
             for c in creates:
                 c.status = "flushed"
+            self._record_suppressed_partners(creates)
         if updates:
             ynab_client.update_transactions(budget_id, [c.txn for c in updates])
             for c in updates:
                 c.status = "flushed"
+            self._record_suppressed_partners(updates)
+
+    def _record_suppressed_partners(self, batch) -> None:
+        """For each flushed keep-side in `batch`, point its suppressed
+        counterpart's FW uuid at the kept side's import_id so dedup's
+        'transfer twin resolved' path skips it forever, then mark it flushed.
+        Called right after a batch is pushed so a later batch's failure can't
+        strand the recording."""
+        for c in batch:
+            if c.transfer_role == "keep" and c.transfer_partner_id:
+                partner = self._candidate(c.transfer_partner_id)
+                if partner.status == "merged":
+                    self._tx_store.record(partner.txn.fw_uuid, c.txn.import_id)
+                    partner.status = "flushed"

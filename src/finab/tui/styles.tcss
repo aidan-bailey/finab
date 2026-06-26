@@ -124,6 +124,8 @@ Label.glyph-warning { color: $warning; }
 Label.glyph-flushed { color: $text-muted; }
 Label.glyph-no-merchant { color: $error; }
 Label.glyph-pre-month { color: $text-muted; }
+Label.glyph-transfer-suggested { color: $warning; }
+Label.glyph-merged { color: $text-muted; }
 
 /* --- TransactionCard editorial layout --- */
 

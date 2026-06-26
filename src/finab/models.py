@@ -142,6 +142,7 @@ class Transaction(BaseModel):
     merchant_name: Optional[str] = None
     import_id: Optional[str] = None
     ynab_id: Optional[str] = None
+    fw_uuid: Optional[str] = None  # original FinWise id; survives import_id rotation
     cleared: str = "uncleared"
     approved: bool = False
     flag_color: Optional[str] = None
@@ -160,6 +161,7 @@ class Transaction(BaseModel):
             merchant_id=txn.merchant_id,
             merchant_name=txn.merchant_name,
             import_id=txn.id,
+            fw_uuid=txn.id,
             cleared="cleared",
             approved=False,
             is_transfer=txn.is_transfer,

@@ -32,27 +32,36 @@ class FinWiseClient:
         self, start_date: Optional[date] = None, end_date: Optional[date] = None
     ) -> List[Transaction]:
         """
-        Fetches all transactions from FinWise and optionally filters by date.
-        Uses the internal transport to bypass SDK issues.
-        Filtering is done client-side as the API endpoint does not support query parameters.
+        Fetches ALL transactions from FinWise via pagination and optionally
+        filters by date client-side.
+
+        FinWise paginates with a JSON-encoded query param:
+            /transactions?pagination={"pageNumber":N,"pageSize":M}
+        The transport returns a bare list (headers discarded), so we stop
+        when a page comes back shorter than the requested page size.
         """
-        # Fetch all transactions (no params)
-        response = self._client._transport.get("/transactions")
+        import json
 
-        if isinstance(response, list):
-            # Parse response into FinWiseTransaction objects
-            finwise_txns = [FinWiseTransaction.model_validate(txn) for txn in response]
+        PAGE_SIZE = 500
+        finwise_txns = []
+        page = 1
+        while True:
+            batch = self._client._transport.get(
+                "/transactions",
+                params={"pagination": json.dumps({"pageNumber": page, "pageSize": PAGE_SIZE})},
+            )
+            if not isinstance(batch, list):
+                raise ValueError(
+                    f"Unexpected response format from FinWise API: {type(batch)}"
+                )
+            finwise_txns.extend(FinWiseTransaction.model_validate(t) for t in batch)
+            if len(batch) < PAGE_SIZE:
+                break
+            page += 1
 
-            # Filter by date
-            if start_date:
-                finwise_txns = [t for t in finwise_txns if t.date.date() >= start_date]
+        if start_date:
+            finwise_txns = [t for t in finwise_txns if t.date.date() >= start_date]
+        if end_date:
+            finwise_txns = [t for t in finwise_txns if t.date.date() <= end_date]
 
-            if end_date:
-                finwise_txns = [t for t in finwise_txns if t.date.date() <= end_date]
-
-            # Convert to unified Transaction model
-            return [Transaction.from_finwise(t) for t in finwise_txns]
-
-        raise ValueError(
-            f"Unexpected response format from FinWise API: {type(response)}"
-        )
+        return [Transaction.from_finwise(t) for t in finwise_txns]

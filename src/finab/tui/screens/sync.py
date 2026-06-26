@@ -79,12 +79,14 @@ class SyncScreen(Container):
         self._store = store
         self._tx_store = tx_store
         self._ynab_payees = list(ynab_payees) if ynab_payees is not None else []
+        from finab.config import load_transfer_match_window_days
         self._engine = SyncEngine(
             fw_transactions=loaded.fw_transactions,
             ynab_transactions=loaded.ynab_transactions,
             ynab_categories=loaded.ynab_categories,
             store=store,
             tx_store=tx_store,
+            transfer_match_window_days=load_transfer_match_window_days(),
         )
 
         def alias_of(candidate):
@@ -143,8 +145,11 @@ class SyncScreen(Container):
         def _on_picked(category_id):
             if category_id is None:
                 return
+            partner_id = getattr(c, "transfer_partner_id", None)
             self._engine.apply_category(c.id, category_id=category_id)
             self._refresh_after_decision(c.id)
+            if partner_id:
+                self.query_one("#sync-pending", PendingList).refresh_row(partner_id)
 
         self.app.push_screen(modal, callback=_on_picked)
 
@@ -167,8 +172,11 @@ class SyncScreen(Container):
         def _on_done(splits):
             if splits is None:
                 return
+            partner_id = getattr(c, "transfer_partner_id", None)
             self._engine.apply_split(c.id, splits=splits)
             self._refresh_after_decision(c.id)
+            if partner_id:
+                self.query_one("#sync-pending", PendingList).refresh_row(partner_id)
 
         self.app.push_screen(modal, callback=_on_done)
 
@@ -191,8 +199,11 @@ class SyncScreen(Container):
             if result is None:
                 return
             _amount_key, entry = result
+            partner_id = getattr(c, "transfer_partner_id", None)
             self._engine.apply_history(c.id, entry=entry)
             self._refresh_after_decision(c.id)
+            if partner_id:
+                self.query_one("#sync-pending", PendingList).refresh_row(partner_id)
 
         self.app.push_screen(modal, callback=_on_picked)
 
@@ -200,13 +211,17 @@ class SyncScreen(Container):
         c = self._current_candidate()
         if c is None or self._engine is None:
             return
+        partner_id = getattr(c, "transfer_partner_id", None)
         try:
             self._engine.undo(c.id)
         except ValueError:
-            # Not a decided candidate — no-op + bell.
+            # Not undoable (wrong status / no prior_state / flushed transfer) — bell.
             self.app.bell()
             return
         self._refresh_after_decision(c.id)
+        if partner_id:
+            pl = self.query_one("#sync-pending", PendingList)
+            pl.refresh_row(partner_id)
 
     def action_flush(self) -> None:
         if self._engine is None:
@@ -247,23 +262,36 @@ class SyncScreen(Container):
             self.app.bell()
             return
         _, entry = closest
+        partner_id = getattr(c, "transfer_partner_id", None)
         self._engine.apply_history(c.id, entry=entry)
         self._refresh_after_decision(c.id)
+        if partner_id:
+            self.query_one("#sync-pending", PendingList).refresh_row(partner_id)
 
     def action_force_transfer(self) -> None:
-        """Open AccountLinkPicker; selected account's transfer_payee_id
-        is passed to engine.apply_transfer."""
+        """On a suggested transfer, confirm the pre-computed pair. Otherwise
+        open the manual account picker (one-sided / undetected transfers)."""
         c = self._current_candidate()
         if c is None or self._engine is None or self._store is None:
             return
+        if c.transfer_role == "keep" and c.auto_reason == "transfer-suggested":
+            self._engine.confirm_transfer_match(c.id)
+            self._refresh_after_decision(c.id)
+            return
+        self._open_force_transfer_picker(c)
+
+    def _open_force_transfer_picker(self, c: Candidate) -> None:
         from finab.tui.widgets.account_link_picker import AccountLinkPicker
         modal = AccountLinkPicker(store=self._store, title="Force transfer to which account?")
 
         def _on_picked(transfer_payee_id):
             if transfer_payee_id is None:
                 return
+            partner_id = getattr(c, "transfer_partner_id", None)
             self._engine.apply_transfer(c.id, transfer_payee_id=transfer_payee_id)
             self._refresh_after_decision(c.id)
+            if partner_id:
+                self.query_one("#sync-pending", PendingList).refresh_row(partner_id)
 
         self.app.push_screen(modal, callback=_on_picked)
 
