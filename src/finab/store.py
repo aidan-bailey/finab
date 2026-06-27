@@ -7,6 +7,7 @@ from typing import Any, Iterable, Optional
 
 CONFIG_FILE = Path("config.json")
 ACCOUNTS_FILE = Path("accounts.json")
+MERCHANTS_FILE = Path("merchants.json")
 
 
 def normalize_alias(alias: str) -> str:
@@ -57,6 +58,7 @@ class ConfigStore:
         self,
         path: Optional[Path] = None,
         accounts_path: Optional[Path] = None,
+        merchants_path: Optional[Path] = None,
     ):
         # Resolve defaults lazily so tests (conftest) can monkey-patch
         # module-level constants before any ConfigStore() is constructed.
@@ -66,9 +68,6 @@ class ConfigStore:
         self.path = Path(path)
 
         if accounts_path is None:
-            # Explicit path → derive accounts.json from the same directory
-            # (keeps test tempdirs self-contained without extra constructor args).
-            # Default path → use patchable ACCOUNTS_FILE (conftest sandbox).
             accounts_path = (
                 self.path.parent / "accounts.json"
                 if explicit_path
@@ -76,8 +75,17 @@ class ConfigStore:
             )
         self.accounts_path = Path(accounts_path)
 
+        if merchants_path is None:
+            merchants_path = (
+                self.path.parent / "merchants.json"
+                if explicit_path
+                else MERCHANTS_FILE
+            )
+        self.merchants_path = Path(merchants_path)
+
         config_data = _load_file(self.path)
         accounts_data = _load_file(self.accounts_path)
+        merchants_data = _load_file(self.merchants_path)
 
         # One-time migration: 'accounts' key in config.json → accounts.json
         if "accounts" in config_data:
@@ -87,16 +95,29 @@ class ConfigStore:
             _write_file(self.accounts_path, accounts_data)
             _write_file(self.path, config_data)
 
+        # One-time migration: 'merchants' key in config.json → merchants.json
+        if "merchants" in config_data:
+            migrated = config_data.pop("merchants")
+            if not merchants_data.get("merchants"):
+                merchants_data = {"merchants": migrated}
+            _write_file(self.merchants_path, merchants_data)
+            _write_file(self.path, config_data)
+
         self._data: dict = config_data
         self._data["accounts"] = accounts_data.get("accounts", {})
-        self._data.setdefault("merchants", {})
+        self._data["merchants"] = merchants_data.get("merchants", {})
         self._rebuild_indexes()
 
     def _save(self) -> None:
         accounts = self._data.get("accounts", {})
-        config_portion = {k: v for k, v in self._data.items() if k != "accounts"}
+        merchants = self._data.get("merchants", {})
+        config_portion = {
+            k: v for k, v in self._data.items()
+            if k not in ("accounts", "merchants")
+        }
         _write_file(self.path, config_portion)
         _write_file(self.accounts_path, {"accounts": accounts})
+        _write_file(self.merchants_path, {"merchants": merchants})
 
     def _rebuild_indexes(self) -> None:
         # One-shot migration: legacy merchant.last_processing -> processings.
