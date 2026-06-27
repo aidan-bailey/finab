@@ -416,7 +416,8 @@ class TestMigrateLastProcessingToProcessings(unittest.TestCase):
 
         ConfigStore(self.path)
 
-        on_disk = json.loads(self.path.read_text())
+        merchants_path = self.path.parent / "merchants.json"
+        on_disk = json.loads(merchants_path.read_text())
         m = on_disk["merchants"]["m-1"]
         self.assertNotIn("last_processing", m)
         self.assertIn("processings", m)
@@ -448,21 +449,25 @@ class TestAccountsFileSplit(unittest.TestCase):
             cfg_data = json.load(f)
         self.assertNotIn("accounts", cfg_data)
 
-    def test_merchants_saved_to_config_json_not_accounts_json(self):
+    def test_merchants_not_in_accounts_json_or_config_json(self):
         store = ConfigStore(self.path)
         store.add_merchant(
             alias="Spar",
             fw_record={"id": "fw-m-1", "name": "Spar"},
             ynab_record={"id": "yn-p-1", "name": "Spar"},
         )
+        merchants_path = self.path.parent / "merchants.json"
+        self.assertTrue(merchants_path.exists())
+        with open(merchants_path) as f:
+            m_data = json.load(f)
+        self.assertEqual(len(m_data["merchants"]), 1)
         with open(self.path) as f:
             cfg_data = json.load(f)
-        self.assertIn("merchants", cfg_data)
-        self.assertEqual(len(cfg_data["merchants"]), 1)
-        self.assertTrue(self.accounts_path.exists())
-        with open(self.accounts_path) as f:
-            accts_data = json.load(f)
-        self.assertNotIn("merchants", accts_data)
+        self.assertNotIn("merchants", cfg_data)
+        if self.accounts_path.exists():
+            with open(self.accounts_path) as f:
+                accts_data = json.load(f)
+            self.assertNotIn("merchants", accts_data)
 
     def test_migration_moves_accounts_from_config_to_accounts_json(self):
         """Legacy config.json with an 'accounts' key is migrated to accounts.json on load."""

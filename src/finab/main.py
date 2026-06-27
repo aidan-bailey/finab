@@ -47,6 +47,7 @@ def run_reset(input_fn=input, output_fn=print) -> bool:
     targets = [
         Path(store_mod.CONFIG_FILE),
         Path(store_mod.ACCOUNTS_FILE),
+        Path(store_mod.MERCHANTS_FILE),
         Path(transactions_mod.TRANSACTIONS_FILE),
     ]
     existing = [p for p in targets if p.exists()]
