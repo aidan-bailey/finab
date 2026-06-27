@@ -6,6 +6,7 @@ from typing import Any, Iterable, Optional
 
 
 CONFIG_FILE = Path("config.json")
+ACCOUNTS_FILE = Path("accounts.json")
 
 
 def normalize_alias(alias: str) -> str:
@@ -34,32 +35,68 @@ def to_dict(obj) -> dict:
     return dict(obj.__dict__)
 
 
+def _load_file(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        return {}
+
+
+def _write_file(path: Path, data: dict) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=4, default=str)
+    os.replace(tmp, path)
+
+
 class ConfigStore:
-    def __init__(self, path: Optional[Path] = None):
-        # Resolve default lazily so tests (conftest) can monkey-patch
-        # CONFIG_FILE without being defeated by def-time default capture.
+    def __init__(
+        self,
+        path: Optional[Path] = None,
+        accounts_path: Optional[Path] = None,
+    ):
+        # Resolve defaults lazily so tests (conftest) can monkey-patch
+        # module-level constants before any ConfigStore() is constructed.
+        explicit_path = path is not None
         if path is None:
             path = CONFIG_FILE
         self.path = Path(path)
-        self._data: dict = self._load()
-        self._data.setdefault("accounts", {})
+
+        if accounts_path is None:
+            # Explicit path → derive accounts.json from the same directory
+            # (keeps test tempdirs self-contained without extra constructor args).
+            # Default path → use patchable ACCOUNTS_FILE (conftest sandbox).
+            accounts_path = (
+                self.path.parent / "accounts.json"
+                if explicit_path
+                else ACCOUNTS_FILE
+            )
+        self.accounts_path = Path(accounts_path)
+
+        config_data = _load_file(self.path)
+        accounts_data = _load_file(self.accounts_path)
+
+        # One-time migration: 'accounts' key in config.json → accounts.json
+        if "accounts" in config_data:
+            migrated = config_data.pop("accounts")
+            if not accounts_data.get("accounts"):
+                accounts_data = {"accounts": migrated}
+            _write_file(self.accounts_path, accounts_data)
+            _write_file(self.path, config_data)
+
+        self._data: dict = config_data
+        self._data["accounts"] = accounts_data.get("accounts", {})
         self._data.setdefault("merchants", {})
         self._rebuild_indexes()
 
-    def _load(self) -> dict:
-        if not self.path.exists():
-            return {}
-        try:
-            with open(self.path, "r") as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            return {}
-
     def _save(self) -> None:
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        with open(tmp, "w") as f:
-            json.dump(self._data, f, indent=4, default=str)
-        os.replace(tmp, self.path)
+        accounts = self._data.get("accounts", {})
+        config_portion = {k: v for k, v in self._data.items() if k != "accounts"}
+        _write_file(self.path, config_portion)
+        _write_file(self.accounts_path, {"accounts": accounts})
 
     def _rebuild_indexes(self) -> None:
         # One-shot migration: legacy merchant.last_processing -> processings.
@@ -100,6 +137,19 @@ class ConfigStore:
 
         if migrated_any:
             self._save()
+
+    def set_budget_id(self, budget_id: str) -> None:
+        """Persist the YNAB budget id into config.json.
+
+        budget_id lives in the same `_data` dict as accounts/merchants, so
+        writing it through the store (rather than the standalone
+        config.save_budget_id) keeps the in-memory state coherent — otherwise
+        a later account/merchant save would re-emit `_data` and clobber a
+        budget_id written behind the store's back. Read back at startup via
+        config.load_budget_id.
+        """
+        self._data["budget_id"] = budget_id
+        self._save()
 
     def accounts(self) -> Iterable[dict]:
         return self._data["accounts"].values()
