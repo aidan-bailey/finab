@@ -42,6 +42,49 @@ class TestConfigStoreBasics(unittest.TestCase):
         self.assertFalse(self.path.with_suffix(".json.tmp").exists())
 
 
+class TestConfigStoreBudgetId(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmpdir.name) / "config.json"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_set_budget_id_persists(self):
+        store = ConfigStore(self.path)
+        store.set_budget_id("b-123")
+        with open(self.path) as f:
+            self.assertEqual(json.load(f)["budget_id"], "b-123")
+
+    def test_budget_id_survives_subsequent_account_save(self):
+        """Regression: writing budget_id then adding an account must NOT
+        clobber the budget_id (both live in the same _data dict)."""
+        store = ConfigStore(self.path)
+        store.set_budget_id("b-123")
+        store.add_account(
+            alias="A",
+            fw_record={"id": "fw", "name": "A", "type": "checking", "balance": 0, "currency_code": "USD"},
+            ynab_record={"id": "yn", "name": "A", "type": "checking", "balance": 0, "transfer_payee_id": "tp"},
+        )
+        with open(self.path) as f:
+            data = json.load(f)
+        self.assertEqual(data["budget_id"], "b-123")
+        self.assertEqual(len(data["accounts"]), 1)
+
+    def test_load_budget_id_reads_what_store_wrote(self):
+        """config.load_budget_id (the read path used at startup) sees the
+        budget_id the store persisted."""
+        import finab.config as config_mod
+        store = ConfigStore(self.path)
+        store.set_budget_id("b-xyz")
+        orig = config_mod.CONFIG_FILE
+        config_mod.CONFIG_FILE = self.path
+        try:
+            self.assertEqual(config_mod.load_budget_id(), "b-xyz")
+        finally:
+            config_mod.CONFIG_FILE = orig
+
+
 class TestConfigStoreAccounts(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -371,6 +414,80 @@ class TestMigrateLastProcessingToProcessings(unittest.TestCase):
         m = on_disk["merchants"]["m-1"]
         self.assertNotIn("last_processing", m)
         self.assertIn("processings", m)
+
+
+class TestAccountsFileSplit(unittest.TestCase):
+    """Verify that accounts are stored in accounts.json, not config.json."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmpdir.name) / "config.json"
+        self.accounts_path = Path(self.tmpdir.name) / "accounts.json"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_accounts_saved_to_accounts_json_not_config_json(self):
+        store = ConfigStore(self.path)
+        store.add_account(
+            alias="Checking",
+            fw_record={"id": "fw-1", "name": "Checking"},
+            ynab_record={"id": "yn-1", "name": "Checking"},
+        )
+        self.assertTrue(self.accounts_path.exists())
+        with open(self.accounts_path) as f:
+            accts_data = json.load(f)
+        self.assertEqual(len(accts_data["accounts"]), 1)
+        with open(self.path) as f:
+            cfg_data = json.load(f)
+        self.assertNotIn("accounts", cfg_data)
+
+    def test_merchants_saved_to_config_json_not_accounts_json(self):
+        store = ConfigStore(self.path)
+        store.add_merchant(
+            alias="Spar",
+            fw_record={"id": "fw-m-1", "name": "Spar"},
+            ynab_record={"id": "yn-p-1", "name": "Spar"},
+        )
+        with open(self.path) as f:
+            cfg_data = json.load(f)
+        self.assertIn("merchants", cfg_data)
+        self.assertEqual(len(cfg_data["merchants"]), 1)
+        with open(self.accounts_path) as f:
+            accts_data = json.load(f)
+        self.assertNotIn("merchants", accts_data)
+
+    def test_migration_moves_accounts_from_config_to_accounts_json(self):
+        """Legacy config.json with an 'accounts' key is migrated to accounts.json on load."""
+        legacy_cfg = {
+            "budget_id": "b-old",
+            "accounts": {
+                "acc-1": {
+                    "id": "acc-1",
+                    "alias": "Savings",
+                    "finwise": {"id": "fw-s", "name": "Savings"},
+                    "ynab": {"id": "yn-s", "name": "Savings"},
+                    "ignore_transactions": False,
+                }
+            },
+            "merchants": {},
+        }
+        self.path.write_text(json.dumps(legacy_cfg))
+
+        store = ConfigStore(self.path)
+
+        self.assertEqual(len(list(store.accounts())), 1)
+        self.assertIsNotNone(store.account_by_finwise_id("fw-s"))
+
+        self.assertTrue(self.accounts_path.exists())
+        with open(self.accounts_path) as f:
+            accts_data = json.load(f)
+        self.assertEqual(len(accts_data["accounts"]), 1)
+
+        with open(self.path) as f:
+            cfg_data = json.load(f)
+        self.assertNotIn("accounts", cfg_data)
+        self.assertEqual(cfg_data["budget_id"], "b-old")
 
 
 class TestConfigStoreMutationsForTui:
