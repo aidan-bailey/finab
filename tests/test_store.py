@@ -497,6 +497,79 @@ class TestAccountsFileSplit(unittest.TestCase):
         self.assertEqual(cfg_data["budget_id"], "b-old")
 
 
+class TestMerchantsFileSplit(unittest.TestCase):
+    """Verify that merchants are stored in merchants.json, not config.json."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmpdir.name) / "config.json"
+        self.merchants_path = Path(self.tmpdir.name) / "merchants.json"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_merchants_saved_to_merchants_json_not_config_json(self):
+        store = ConfigStore(self.path)
+        store.add_merchant(
+            alias="Spar",
+            fw_record={"id": "fw-m-1", "name": "Spar"},
+            ynab_record={"id": "yn-p-1", "name": "Spar"},
+        )
+        self.assertTrue(self.merchants_path.exists())
+        with open(self.merchants_path) as f:
+            m_data = json.load(f)
+        self.assertEqual(len(m_data["merchants"]), 1)
+        with open(self.path) as f:
+            cfg_data = json.load(f)
+        self.assertNotIn("merchants", cfg_data)
+
+    def test_accounts_not_in_merchants_json(self):
+        store = ConfigStore(self.path)
+        store.add_account(
+            alias="Checking",
+            fw_record={"id": "fw-1", "name": "Checking"},
+            ynab_record={"id": "yn-1", "name": "Checking"},
+        )
+        # merchants.json may or may not be created; if it exists, no accounts key
+        if self.merchants_path.exists():
+            with open(self.merchants_path) as f:
+                m_data = json.load(f)
+            self.assertNotIn("accounts", m_data)
+
+    def test_migration_moves_merchants_from_config_to_merchants_json(self):
+        """Legacy config.json with a 'merchants' key is migrated to merchants.json on load."""
+        legacy_cfg = {
+            "budget_id": "b-old",
+            "accounts": {},
+            "merchants": {
+                "m-1": {
+                    "id": "m-1",
+                    "alias": "Spar",
+                    "finwise": {"fw-m-1": {"id": "fw-m-1", "name": "Spar"}},
+                    "ynab": {"id": "yn-p-1", "name": "Spar"},
+                    "categories_used": {},
+                    "processings": {},
+                }
+            },
+        }
+        self.path.write_text(json.dumps(legacy_cfg))
+
+        store = ConfigStore(self.path)
+
+        self.assertEqual(len(list(store.merchants())), 1)
+        self.assertIsNotNone(store.merchant_by_finwise_id("fw-m-1"))
+
+        self.assertTrue(self.merchants_path.exists())
+        with open(self.merchants_path) as f:
+            m_data = json.load(f)
+        self.assertEqual(len(m_data["merchants"]), 1)
+
+        with open(self.path) as f:
+            cfg_data = json.load(f)
+        self.assertNotIn("merchants", cfg_data)
+        self.assertEqual(cfg_data["budget_id"], "b-old")
+
+
 class TestConfigStoreMutationsForTui:
     """Mutation methods added in Plan 3 for the TUI's Accounts/Merchants/Memory screens."""
 
