@@ -27,11 +27,14 @@ def _sandbox_default_state_paths():
 
     orig_txn_file = transactions_mod.TRANSACTIONS_FILE
     orig_cfg_file = store_mod.CONFIG_FILE
+    orig_accts_file = store_mod.ACCOUNTS_FILE
 
     transactions_mod.TRANSACTIONS_FILE = sandbox / "transactions.json"
     store_mod.CONFIG_FILE = sandbox / "config.json"
+    store_mod.ACCOUNTS_FILE = sandbox / "accounts.json"
     try:
         yield
     finally:
         transactions_mod.TRANSACTIONS_FILE = orig_txn_file
         store_mod.CONFIG_FILE = orig_cfg_file
+        store_mod.ACCOUNTS_FILE = orig_accts_file
