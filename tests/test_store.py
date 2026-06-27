@@ -58,7 +58,8 @@ class TestConfigStoreBudgetId(unittest.TestCase):
 
     def test_budget_id_survives_subsequent_account_save(self):
         """Regression: writing budget_id then adding an account must NOT
-        clobber the budget_id (both live in the same _data dict)."""
+        clobber the budget_id. budget_id lives in config.json; accounts
+        in accounts.json — they cannot interfere."""
         store = ConfigStore(self.path)
         store.set_budget_id("b-123")
         store.add_account(
@@ -67,9 +68,14 @@ class TestConfigStoreBudgetId(unittest.TestCase):
             ynab_record={"id": "yn", "name": "A", "type": "checking", "balance": 0, "transfer_payee_id": "tp"},
         )
         with open(self.path) as f:
-            data = json.load(f)
-        self.assertEqual(data["budget_id"], "b-123")
-        self.assertEqual(len(data["accounts"]), 1)
+            cfg_data = json.load(f)
+        self.assertEqual(cfg_data["budget_id"], "b-123")
+        self.assertNotIn("accounts", cfg_data)  # regression guard
+
+        accounts_path = self.path.parent / "accounts.json"
+        with open(accounts_path) as f:
+            accts_data = json.load(f)
+        self.assertEqual(len(accts_data["accounts"]), 1)
 
     def test_load_budget_id_reads_what_store_wrote(self):
         """config.load_budget_id (the read path used at startup) sees the
