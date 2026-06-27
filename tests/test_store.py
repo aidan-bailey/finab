@@ -453,6 +453,7 @@ class TestAccountsFileSplit(unittest.TestCase):
             cfg_data = json.load(f)
         self.assertIn("merchants", cfg_data)
         self.assertEqual(len(cfg_data["merchants"]), 1)
+        self.assertTrue(self.accounts_path.exists())
         with open(self.accounts_path) as f:
             accts_data = json.load(f)
         self.assertNotIn("merchants", accts_data)
