@@ -73,6 +73,51 @@ class _FakeFwAccount:
 
 
 @pytest.mark.asyncio
+async def test_accounts_unmapped_count(tmp_path):
+    """unmapped_count() returns the number of FW accounts not in the store."""
+    from finab.tui.app import FinabApp
+    from finab.tui.screens.accounts import AccountsScreen
+    from textual.widgets import ContentSwitcher
+
+    store = _seed_store(tmp_path)  # store has fw-a and fw-b
+    fw_accounts = [
+        _FakeFwAccount("fw-a", "Chase"),     # mapped
+        _FakeFwAccount("fw-c", "BoA Card"),  # unmapped
+        _FakeFwAccount("fw-d", "Discover"),  # unmapped
+    ]
+    app = FinabApp(store=store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        switcher = app.query_one("#content-switcher", ContentSwitcher)
+        switcher.current = "screen-accounts"
+        await pilot.pause()
+        ac = app.query_one(AccountsScreen)
+        ac.bind_data(store=store, fw_accounts=fw_accounts, ynab_accounts=[], ynab_client=None, budget_id=None)
+        await pilot.pause()
+        assert ac.unmapped_count() == 2
+
+
+@pytest.mark.asyncio
+async def test_accounts_unmapped_count_zero_when_all_mapped(tmp_path):
+    from finab.tui.app import FinabApp
+    from finab.tui.screens.accounts import AccountsScreen
+    from textual.widgets import ContentSwitcher
+
+    store = _seed_store(tmp_path)
+    fw_accounts = [_FakeFwAccount("fw-a", "Chase"), _FakeFwAccount("fw-b", "Crypto")]
+    app = FinabApp(store=store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        switcher = app.query_one("#content-switcher", ContentSwitcher)
+        switcher.current = "screen-accounts"
+        await pilot.pause()
+        ac = app.query_one(AccountsScreen)
+        ac.bind_data(store=store, fw_accounts=fw_accounts, ynab_accounts=[], ynab_client=None, budget_id=None)
+        await pilot.pause()
+        assert ac.unmapped_count() == 0
+
+
+@pytest.mark.asyncio
 async def test_accounts_screen_shows_unmapped_fw_accounts(tmp_path):
     """When `fw_accounts` contains accounts not in the store, they
     render as unmapped rows with the `!` glyph."""

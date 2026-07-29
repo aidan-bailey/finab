@@ -56,6 +56,22 @@ class MerchantsScreen(Container):
         self._budget_id = budget_id
         self.refresh_rows()
 
+    def _unmapped_merchants(self) -> list:
+        """Distinct FW merchants (from fw_transactions) not yet in the store."""
+        if self._store is None:
+            return []
+        from finab.engine.merchants import _extract_distinct_merchants
+        all_distinct = _extract_distinct_merchants(self._fw_transactions)
+        # Collect all fw_ids across every mapped merchant's finwise dict.
+        mapped_fw_ids = set()
+        for m in self._store.merchants():
+            mapped_fw_ids.update((m.get("finwise") or {}).keys())
+        return [d for d in all_distinct if d["id"] not in mapped_fw_ids]
+
+    def unmapped_count(self) -> int:
+        """How many distinct FW merchants are still unmapped."""
+        return len(self._unmapped_merchants())
+
     def refresh_rows(self) -> None:
         lv = self.query_one("#merchants-list", ListView)
         lv.clear()
@@ -64,13 +80,7 @@ class MerchantsScreen(Container):
             return
 
         # 1. Unmapped merchants — derive from fw_transactions.
-        from finab.engine.merchants import _extract_distinct_merchants
-        all_distinct = _extract_distinct_merchants(self._fw_transactions)
-        # Collect all fw_ids across every mapped merchant's finwise dict.
-        mapped_fw_ids = set()
-        for m in self._store.merchants():
-            mapped_fw_ids.update((m.get("finwise") or {}).keys())
-        unmapped = [d for d in all_distinct if d["id"] not in mapped_fw_ids]
+        unmapped = self._unmapped_merchants()
         for fw_m in unmapped:
             name = fw_m.get("name") or "(no name)"
             text = f"!  {name:<22.22}  →  (unlinked — press `l` to map)"

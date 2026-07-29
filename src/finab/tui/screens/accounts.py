@@ -64,6 +64,24 @@ class AccountsScreen(Container):
         self._budget_id = budget_id
         self.refresh_rows()
 
+    def _unmapped_fw_accounts(self) -> list:
+        """FW accounts present in the live fetch but not yet in the store."""
+        if self._store is None:
+            return []
+        mapped_fw_ids = {
+            (a.get("finwise") or {}).get("id")
+            for a in self._store.accounts()
+        }
+        return [
+            fw for fw in self._fw_accounts
+            if getattr(fw, "finwise_id", None) and fw.finwise_id not in mapped_fw_ids
+        ]
+
+    def unmapped_count(self) -> int:
+        """How many FW accounts are still unmapped. Drives the setup
+        wizard's strict accounts gate."""
+        return len(self._unmapped_fw_accounts())
+
     def refresh_rows(self) -> None:
         lv = self.query_one("#accounts-list", ListView)
         lv.clear()
@@ -73,14 +91,7 @@ class AccountsScreen(Container):
 
         # 1. Unmapped FW accounts — any fw_account whose finwise_id isn't
         # in the store yet.
-        mapped_fw_ids = {
-            (a.get("finwise") or {}).get("id")
-            for a in self._store.accounts()
-        }
-        unmapped = [
-            fw for fw in self._fw_accounts
-            if getattr(fw, "finwise_id", None) and fw.finwise_id not in mapped_fw_ids
-        ]
+        unmapped = self._unmapped_fw_accounts()
         for fw in unmapped:
             text = f"!  {fw.name:<22.22}  →  (unlinked — press `l` to map)"
             lv.append(ListItem(Label(text)))

@@ -133,6 +133,39 @@ async def test_merchants_screen_shows_unmapped(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_merchants_unmapped_count(tmp_path):
+    """unmapped_count() returns the number of distinct FW merchants not
+    yet in the store."""
+    from finab.tui.app import FinabApp
+    from finab.tui.screens.merchants import MerchantsScreen
+    from textual.widgets import ContentSwitcher
+
+    store = _seed_store_with_merchants(tmp_path)  # has fw-m1, fw-m2
+    txns = [
+        _FakeFwTxn(merchant_id="fw-m1"),    # mapped
+        _FakeFwTxn(merchant_id="fw-new-x"),  # unmapped
+        _FakeFwTxn(merchant_id="fw-new-y"),  # unmapped
+        _FakeFwTxn(merchant_id="fw-new-y"),  # dup of the above — still one
+    ]
+    app = FinabApp(store=store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        switcher = app.query_one("#content-switcher", ContentSwitcher)
+        switcher.current = "screen-merchants"
+        await pilot.pause()
+        ms = app.query_one(MerchantsScreen)
+        ms.bind_data(
+            store=store,
+            fw_transactions=txns,
+            ynab_payees=[],
+            ynab_client=None,
+            budget_id=None,
+        )
+        await pilot.pause()
+        assert ms.unmapped_count() == 2
+
+
+@pytest.mark.asyncio
 async def test_link_unmapped_merchant_to_new_payee(tmp_path):
     """Type an alias that doesn't match → confirm create → YNAB payee created + linked."""
     from finab.store import ConfigStore

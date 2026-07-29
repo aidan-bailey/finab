@@ -20,6 +20,7 @@ from finab.tui.screens.settings import SettingsScreen
 from finab.tui.screens.sync import SyncScreen
 from finab.tui.widgets.error_banner import ErrorBanner
 from finab.tui.widgets.finab_header import FinabHeader
+from finab.tui.widgets.wizard_banner import WizardBanner
 
 
 FINAB_THEME = Theme(
@@ -73,6 +74,7 @@ class FinabApp(App):
         ("u", "sync_undo", "Undo"),
         ("f", "sync_flush", "Flush"),
         ("enter", "sync_repeat_closest", "Repeat closest"),
+        ("n", "wizard_next", "Next step"),
         ("g", "sync_top", "Top"),
         ("G", "sync_bottom", "Bottom"),
         ("question_mark", "show_help", "Help"),
@@ -93,10 +95,14 @@ class FinabApp(App):
         self._store = store
         self._tx_store = tx_store
         self.loaded: LoadedData | None = None
+        # First-run setup wizard. None when inactive; otherwise one of
+        # "budget" / "accounts" / "merchants" (the current step).
+        self._wizard_step: str | None = None
 
     def compose(self) -> ComposeResult:
         yield FinabHeader(id="finab-header")
         yield ErrorBanner(id="error-banner")
+        yield WizardBanner(id="wizard-banner")
         with Horizontal():
             yield ListView(
                 *[ListItem(Label(name), id=f"item-{sid}") for name, sid in SCREEN_IDS],
@@ -125,8 +131,13 @@ class FinabApp(App):
         except Exception:
             pass
 
-        if self._fw_client and self._ynab_client and self._budget_id:
-            self._kickoff_load()
+        if self._fw_client and self._ynab_client:
+            if self._budget_id:
+                self._kickoff_load()
+            else:
+                # No budget configured (e.g. right after `finab --reset`).
+                # Launch the first-run setup wizard.
+                self._start_wizard()
         elif self._store is not None:
             try:
                 self.query_one(AccountsScreen).bind_data(store=self._store)
@@ -204,8 +215,105 @@ class FinabApp(App):
             memory_screen.bind_data(store=self._store)
         self._refresh_header_stats()
 
+        # If the wizard kicked off this load (budget just chosen), advance
+        # to the strict accounts step now that data is bound.
+        if self._wizard_step == "budget" and self.loaded.error is None:
+            self._enter_accounts_step()
+
+    # --- First-run setup wizard ---
+
+    _WIZARD_TOTAL = 3
+    _WIZARD_STEP_SCREEN = {
+        "accounts": "screen-accounts",
+        "merchants": "screen-merchants",
+    }
+
+    @work(exclusive=True)
+    async def _start_wizard(self) -> None:
+        """Step 1: fetch YNAB budgets and present the picker. Entered when
+        no budget_id is configured (first run / post-reset)."""
+        try:
+            budgets = self._ynab_client.get_budgets()
+        except Exception as e:  # network/credential failure
+            self.loaded = LoadedData(error=e)
+            self._render_error_banner()
+            return
+        if not budgets:
+            banner = self.query_one("#error-banner", ErrorBanner)
+            banner.show("No YNAB budgets found for this token. Press q to quit.")
+            return
+        self._wizard_step = "budget"
+        from finab.tui.widgets.budget_picker import BudgetPickerModal
+        self.push_screen(
+            BudgetPickerModal(budgets=budgets),
+            callback=self._on_budget_chosen,
+        )
+
+    def _on_budget_chosen(self, budget_id) -> None:
+        """Picker callback. None (cancel) → quit, since there is nothing to
+        do without a budget. Otherwise persist it and kick off the load,
+        which advances to the accounts step on completion."""
+        if not budget_id:
+            self.exit()
+            return
+        budget_id = str(budget_id)
+        self._store.set_budget_id(budget_id)
+        self._budget_id = budget_id
+        try:
+            self.query_one(SettingsScreen).bind_data(budget_id=budget_id)
+        except Exception:
+            pass
+        self._kickoff_load()
+
+    def _set_active_screen(self, screen_id: str) -> None:
+        switcher = self.query_one("#content-switcher", ContentSwitcher)
+        switcher.current = screen_id
+        self._active_screen = screen_id
+
+    def _enter_accounts_step(self) -> None:
+        self._wizard_step = "accounts"
+        self._set_active_screen("screen-accounts")
+        self.query_one("#wizard-banner", WizardBanner).show(
+            2, self._WIZARD_TOTAL, "map every account, then press n to continue"
+        )
+
+    def _enter_merchants_step(self) -> None:
+        self._wizard_step = "merchants"
+        self._set_active_screen("screen-merchants")
+        self.query_one("#wizard-banner", WizardBanner).show(
+            3, self._WIZARD_TOTAL, "map merchants (optional), then press n to finish"
+        )
+
+    def _finish_wizard(self) -> None:
+        self._wizard_step = None
+        self.query_one("#wizard-banner", WizardBanner).hide()
+        self._set_active_screen("screen-sync")
+
+    def action_wizard_next(self) -> None:
+        if self._wizard_step == "accounts":
+            try:
+                remaining = self.query_one(AccountsScreen).unmapped_count()
+            except Exception:
+                remaining = 0
+            if remaining > 0:
+                self.query_one("#wizard-banner", WizardBanner).show(
+                    2, self._WIZARD_TOTAL,
+                    f"{remaining} account(s) still unmapped — map them, then press n",
+                )
+                self.bell()
+                return
+            self._enter_merchants_step()
+        elif self._wizard_step == "merchants":
+            self._finish_wizard()
+
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.item is None:
+            return
+        # Navigation lock: while the wizard is active, the sidebar can't be
+        # used to skip ahead — snap the content back to the current step.
+        if self._wizard_step is not None:
+            locked = self._WIZARD_STEP_SCREEN.get(self._wizard_step, "screen-sync")
+            self._set_active_screen(locked)
             return
         item_id = event.item.id
         if item_id and item_id.startswith("item-"):
@@ -326,6 +434,9 @@ class FinabApp(App):
         """
         if action in self._ALWAYS_VISIBLE:
             return True
+        if action == "wizard_next":
+            # Only live during the wizard; inert (and hidden) otherwise.
+            return self._wizard_step is not None
         if action in self._SYNC_ACTIONS:
             return self._active_screen == "screen-sync"
         if action in self._ACCOUNTS_OR_MERCHANTS_ACTIONS:
