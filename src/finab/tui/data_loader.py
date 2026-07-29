@@ -11,7 +11,25 @@ All exceptions are caught and surfaced via LoadedData.error so the
 TUI can show a banner instead of crashing.
 """
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Optional
+
+
+def _initial_window_start(today: date) -> date:
+    """First day of the month two months before `today`'s month.
+
+    Bounds the initialisation fetch: the current month-to-date plus the two
+    preceding full calendar months (today 2026-06-26 -> 2026-04-01, covering
+    April + May in full and June so far). Aligns with the sync engine's
+    'pre-month' rule — this month's txns auto-process while the two prior
+    months surface as pre-month pending.
+    """
+    month = today.month - 2
+    year = today.year
+    while month <= 0:
+        month += 12
+        year -= 1
+    return date(year, month, 1)
 
 
 @dataclass
@@ -38,7 +56,12 @@ async def load_all(*, fw_client, ynab_client, budget_id: str) -> LoadedData:
     data = LoadedData()
     try:
         data.fw_accounts = fw_client.get_accounts()
-        data.fw_transactions = fw_client.get_transactions()
+        # Initialisation window: only the last two months + current month-to-date.
+        # FinWise (the source) is bounded; YNAB stays unbounded so dedup's
+        # prune_stale sees the full live set and can't drop out-of-window mappings.
+        data.fw_transactions = fw_client.get_transactions(
+            start_date=_initial_window_start(date.today())
+        )
         data.ynab_accounts = ynab_client.get_accounts(budget_id)
         data.ynab_transactions = ynab_client.get_transactions(budget_id)
         data.ynab_categories = ynab_client.get_categories(budget_id)

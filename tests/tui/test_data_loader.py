@@ -1,6 +1,8 @@
 """Tests for the async data loader."""
+from datetime import date
+
 import pytest
-from finab.tui.data_loader import LoadedData, load_all
+from finab.tui.data_loader import LoadedData, load_all, _initial_window_start
 
 
 class _FakeFwClient:
@@ -14,6 +16,7 @@ class _FakeFwClient:
             raise RuntimeError("fw accounts fetch failed")
         return self._accounts
     def get_transactions(self, **kwargs):
+        self.start_date_seen = kwargs.get("start_date")
         if self._raise_on == "transactions":
             raise RuntimeError("fw transactions fetch failed")
         return self._transactions
@@ -52,6 +55,28 @@ class _FakeYnabClient:
         return self._category_groups
     def get_payees(self, budget_id):
         return self._payees
+
+
+def test_initial_window_start_midyear():
+    # June 26 -> April 1 (April + May full, June month-to-date).
+    assert _initial_window_start(date(2026, 6, 26)) == date(2026, 4, 1)
+
+
+def test_initial_window_start_january_wraps_year():
+    assert _initial_window_start(date(2026, 1, 10)) == date(2025, 11, 1)
+
+
+def test_initial_window_start_february_wraps_year():
+    assert _initial_window_start(date(2026, 2, 10)) == date(2025, 12, 1)
+
+
+async def test_load_all_limits_fw_transactions_to_two_month_window():
+    """The initial FinWise fetch is bounded to the two-month window; YNAB
+    stays unbounded (dedup needs the full live view)."""
+    fw = _FakeFwClient(transactions=["t"])
+    ynab = _FakeYnabClient()
+    await load_all(fw_client=fw, ynab_client=ynab, budget_id="bid")
+    assert fw.start_date_seen == _initial_window_start(date.today())
 
 
 async def test_load_all_returns_loaded_data():
