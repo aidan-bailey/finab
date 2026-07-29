@@ -213,10 +213,12 @@ class MerchantsScreen(Container):
             self.refresh_rows()
             return
 
-        # 3. No match — confirm create.
+        # 3. No match — confirm create. Enter confirms (not just `y`) so a
+        # default-named merchant links in one keystroke from the prompt.
         from finab.tui.widgets.yes_no_modal import YesNoModal
         modal = YesNoModal(
             message=f"No YNAB payee named '{alias}' exists. Create a new one?",
+            enter_confirms=True,
         )
 
         def _on_confirm(answer):

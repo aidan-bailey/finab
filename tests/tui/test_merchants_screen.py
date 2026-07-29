@@ -179,6 +179,49 @@ async def test_link_unmapped_merchant_to_new_payee(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_link_unmapped_merchant_create_accepts_enter(tmp_path):
+    """Enter confirms the 'create new payee?' prompt (not just 'y'), inside
+    the real FinabApp where the app also binds Enter."""
+    from finab.store import ConfigStore
+    from finab.tui.app import FinabApp
+    from finab.tui.screens.merchants import MerchantsScreen
+    from finab.tui.widgets.alias_input import AliasInputModal
+    from finab.tui.widgets.yes_no_modal import YesNoModal
+    from textual.widgets import ContentSwitcher
+
+    store = ConfigStore(tmp_path / "config.json")
+    txns = [_FakeFwTxn(merchant_id="fw-merch-x", merchant_name="Coricraft")]
+    ynab_client = _StubYnabClientForMerchants()
+
+    app = FinabApp(store=store)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        switcher = app.query_one("#content-switcher", ContentSwitcher)
+        switcher.current = "screen-merchants"
+        await pilot.pause()
+        ms = app.query_one(MerchantsScreen)
+        ms.bind_data(
+            store=store,
+            fw_transactions=txns,
+            ynab_payees=[],
+            ynab_client=ynab_client,
+            budget_id="bid",
+        )
+        await pilot.pause()
+        ms.set_cursor(0)
+        ms.action_link()
+        await pilot.pause()
+        assert isinstance(app.screen, AliasInputModal)
+        app.screen.dismiss("Coricraft")
+        await pilot.pause()
+        assert isinstance(app.screen, YesNoModal)
+        await pilot.press("enter")  # <-- Enter, not "y"
+        await pilot.pause()
+        assert len(ynab_client.created_payees) == 1
+        assert store.merchant_by_alias("Coricraft") is not None
+
+
+@pytest.mark.asyncio
 async def test_merchants_screen_has_detail_pane(tmp_path):
     """MerchantsScreen renders both a list pane and a detail pane."""
     from finab.tui.app import FinabApp
