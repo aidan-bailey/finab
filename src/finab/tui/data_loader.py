@@ -19,6 +19,7 @@ class LoadedData:
     """Bundled result of all data fetches needed by the TUI on boot."""
     fw_accounts: list = field(default_factory=list)
     fw_transactions: list = field(default_factory=list)
+    fw_merchants: dict = field(default_factory=dict)  # {merchant_id: name}
     ynab_accounts: list = field(default_factory=list)
     ynab_transactions: list = field(default_factory=list)
     ynab_categories: list = field(default_factory=list)
@@ -45,4 +46,24 @@ async def load_all(*, fw_client, ynab_client, budget_id: str) -> LoadedData:
         data.ynab_payees = ynab_client.get_payees(budget_id)
     except Exception as e:
         data.error = e
+
+    # Best-effort: backfill FinWise merchant names. The /transactions endpoint
+    # omits them; /merchants supplies the {id: name} the UI shows. This is a
+    # display nicety — a failure here must NOT fail the load, so it lives
+    # outside (and after) the load-critical block above.
+    get_merchants = getattr(fw_client, "get_merchants", None)
+    if get_merchants is not None:
+        try:
+            name_map = get_merchants() or {}
+            data.fw_merchants = name_map
+            for txn in data.fw_transactions:
+                mid = getattr(txn, "merchant_id", None)
+                if mid and not getattr(txn, "merchant_name", None):
+                    try:
+                        txn.merchant_name = name_map.get(mid)
+                    except (AttributeError, ValueError):
+                        pass  # immutable/odd txn object — skip silently
+        except Exception:
+            pass  # names unavailable; transactions still sync fine
+
     return data

@@ -34,10 +34,15 @@ it implements.
 **FinWise** — the *source* (read-only). A bank/card aggregator.
 - **Account** — a real-world bank/card/loan account. Has `type` + `sub_type`
   (`depository/checking`, `credit`, `loan`, `investment`, …).
-- **Merchant** — who you paid. Lives *on transactions only* — FinWise has no
-  merchant endpoint, so the distinct-merchant list is derived by walking
-  transactions (`_extract_distinct_merchants`). Keyed by `merchant_id`;
-  `merchant_name` is often null.
+- **Merchant** — who you paid. Transactions carry only `merchant_id`; the
+  `/transactions` payload **omits the name** (`merchantName` is absent →
+  `merchant_name` is null on every txn). The names live behind a separate
+  **`/merchants` endpoint** (id → name, e.g. "Total", "Woolworths") that the
+  finwise-python SDK does **not** wrap — `FinWiseClient.get_merchants()` calls
+  it raw via the transport, and `load_all` backfills `Transaction.merchant_name`
+  from that map. The distinct-merchant list is still derived by walking
+  transactions (`_extract_distinct_merchants`), keyed by `merchant_id`, but now
+  displays the real resolved name.
 - **Transaction** — `description` (human label), `amount` (signed **decimal**
   with `currency_code`, default ZAR), `date`, `merchant_id`, plus flags
   `is_transfer`, `is_pending`, `is_manual`, `needs_review`. FinWise's own

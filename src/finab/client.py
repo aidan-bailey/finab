@@ -28,6 +28,20 @@ class FinWiseClient:
             
         return accounts
 
+    def get_merchants(self) -> dict:
+        """Fetch FinWise's merchant catalogue as a `{merchant_id: name}` map.
+
+        The `/transactions` endpoint returns only `merchantId` (the name is
+        omitted), but the `/merchants` endpoint — which the finwise-python SDK
+        does not wrap — supplies the human-readable names the FinWise UI shows
+        (e.g. "Total", "Woolworths"). Used to backfill `Transaction.merchant_name`
+        at load time so merchant rows display real names instead of UUIDs.
+        """
+        response = self._client._transport.get("/merchants")
+        if not isinstance(response, list):
+            return {}
+        return {m["id"]: m.get("name") for m in response if m.get("id")}
+
     def get_transactions(
         self, start_date: Optional[date] = None, end_date: Optional[date] = None
     ) -> List[Transaction]:

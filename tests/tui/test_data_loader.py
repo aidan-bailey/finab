@@ -4,9 +4,10 @@ from finab.tui.data_loader import LoadedData, load_all
 
 
 class _FakeFwClient:
-    def __init__(self, accounts=None, transactions=None, raise_on=None):
+    def __init__(self, accounts=None, transactions=None, merchants=None, raise_on=None):
         self._accounts = accounts or []
         self._transactions = transactions or []
+        self._merchants = merchants if merchants is not None else {}
         self._raise_on = raise_on
     def get_accounts(self):
         if self._raise_on == "accounts":
@@ -16,6 +17,17 @@ class _FakeFwClient:
         if self._raise_on == "transactions":
             raise RuntimeError("fw transactions fetch failed")
         return self._transactions
+    def get_merchants(self):
+        if self._raise_on == "merchants":
+            raise RuntimeError("fw merchants fetch failed")
+        return self._merchants
+
+
+class _Txn:
+    """Minimal stand-in for the unified Transaction (mutable merchant_name)."""
+    def __init__(self, merchant_id, merchant_name=None):
+        self.merchant_id = merchant_id
+        self.merchant_name = merchant_name
 
 
 class _FakeYnabClient:
@@ -69,3 +81,28 @@ async def test_load_all_captures_exception():
     data = await load_all(fw_client=fw, ynab_client=ynab, budget_id="bid")
     assert data.error is not None
     assert "fw transactions fetch failed" in str(data.error)
+
+
+async def test_load_all_resolves_merchant_names():
+    """merchant_name is backfilled from /merchants where null, never
+    overwriting an existing name, and ignoring txns without a merchant_id."""
+    txns = [_Txn("m-1"), _Txn("m-2", "Existing"), _Txn(None)]
+    fw = _FakeFwClient(transactions=txns, merchants={"m-1": "Total", "m-2": "Woolworths"})
+    ynab = _FakeYnabClient()
+    data = await load_all(fw_client=fw, ynab_client=ynab, budget_id="bid")
+    assert data.error is None
+    assert txns[0].merchant_name == "Total"       # filled from map
+    assert txns[1].merchant_name == "Existing"     # not overwritten
+    assert txns[2].merchant_name is None           # no merchant_id → skipped
+    assert data.fw_merchants == {"m-1": "Total", "m-2": "Woolworths"}
+
+
+async def test_load_all_merchant_name_failure_is_non_fatal():
+    """A /merchants failure must not break the whole load — names are a
+    display nicety, not load-critical."""
+    txns = [_Txn("m-1")]
+    fw = _FakeFwClient(transactions=txns, raise_on="merchants")
+    ynab = _FakeYnabClient()
+    data = await load_all(fw_client=fw, ynab_client=ynab, budget_id="bid")
+    assert data.error is None
+    assert txns[0].merchant_name is None

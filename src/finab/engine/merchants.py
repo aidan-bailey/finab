@@ -97,10 +97,12 @@ def _record_merchant_alias(
 def _extract_distinct_merchants(fw_transactions) -> list[dict]:
     """Walk FinWise transactions and emit one record per unique merchant_id.
 
-    FinWise has no merchant endpoint; merchant data lives on transactions.
-    Captures a few sample transactions per merchant so the user has enough
-    context to recognize the merchant when prompted (merchant_name is often
-    null on the FinWise side).
+    The FinWise `/transactions` payload carries `merchant_id` but omits the
+    name. Names come from the `/merchants` endpoint and are backfilled onto
+    `Transaction.merchant_name` by `load_all` before this runs — so the `name`
+    here is the real merchant name (e.g. "Total") when that resolution ran,
+    and None otherwise. Sample transactions are still captured per merchant so
+    the user has context even when names are unavailable.
 
     Operates on the unified `Transaction` model: amount is an int in
     milliunits (1000 = 1.00), date is a `date`, and the human-readable

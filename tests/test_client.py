@@ -51,3 +51,39 @@ def test_get_transactions_single_short_page_stops_immediately():
     txns = c.get_transactions()
     assert len(txns) == 10
     assert len(c._client._transport.calls) == 1
+
+
+class _MerchTransport:
+    """Returns a canned /merchants list, ignores other paths."""
+    def __init__(self, merchants):
+        self._m = merchants
+        self.paths = []
+
+    def get(self, path, *, params=None):
+        self.paths.append(path)
+        return self._m if path == "/merchants" else []
+
+
+def _client_with_merchants(merchants):
+    c = FinWiseClient.__new__(FinWiseClient)
+    class _Inner: pass
+    c._client = _Inner()
+    c._client._transport = _MerchTransport(merchants)
+    return c
+
+
+def test_get_merchants_returns_id_to_name_map():
+    c = _client_with_merchants([
+        {"id": "m-1", "name": "Total"},
+        {"id": "m-2", "name": "Woolworths"},
+    ])
+    assert c.get_merchants() == {"m-1": "Total", "m-2": "Woolworths"}
+    assert c._client._transport.paths == ["/merchants"]
+
+
+def test_get_merchants_skips_records_without_id():
+    c = _client_with_merchants([
+        {"id": "m-1", "name": "Total"},
+        {"name": "orphan with no id"},
+    ])
+    assert c.get_merchants() == {"m-1": "Total"}
